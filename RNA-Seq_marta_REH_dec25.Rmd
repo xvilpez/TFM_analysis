@@ -1395,8 +1395,9 @@ p_cluster_summary <- ggplot(cluster_enrichment_stats, aes(x = factor(Cluster), y
        subtitle = "Count of motifs with p < 0.05", x = "Cluster", y = "Number of Significant Motifs")
 print(p_cluster_summary)
 ggsave(file.path(homer_promoter_dir, "motif_sig_count_per_cluster_promoters.pdf"), p_cluster_summary, width = 8, height = 6)
+```
 
-# 4. TF family enrichment
+```{r TF-family-plots promoters, fig.width=10, fig.height=6}
 tf_families <- list(
   "E2A/TCF" = c("E2A","TCF","E47","E12"),
   "PBX"     = c("PBX1","PBX2","PBX3","PBX"),
@@ -1417,37 +1418,55 @@ for (family_name in names(tf_families)) {
 }
 tf_family_combined <- bind_rows(tf_family_enrichment)
 
+tf_heatmap_plot <- NULL
+tf_dot_plot <- NULL
+
 if (nrow(tf_family_combined) > 0) {
-  tf_summary <- tf_family_combined %>%
-    group_by(TF_Family, Cluster) %>%
-    summarise(max_enrichment = max(neg_log_p), n_motifs = n(), .groups = "drop") %>%
-    pivot_wider(names_from = Cluster, values_from = max_enrichment, values_fill = 0)
-  
-  tf_summary_matrix <- as.data.frame(tf_summary)
-  rownames(tf_summary_matrix) <- tf_summary_matrix$TF_Family
-  tf_summary_matrix$TF_Family <- NULL
-  tf_summary_matrix$n_motifs  <- NULL
-  tf_summary_matrix <- as.matrix(tf_summary_matrix)
-  
-  pdf(file.path(homer_promoter_dir, "TF_family_heatmap_promoters.pdf"), width = 10, height = 6)
-  pheatmap(tf_summary_matrix, cluster_rows = FALSE, cluster_cols = FALSE,
-    color = colorRampPalette(c("white","pink","red","darkred"))(100),
-    main = "TF Family Enrichment Across Clusters\n(Max -log10 P-value per family)",
-    display_numbers = TRUE, number_format = "%.1f", fontsize = 11,
-    angle_col = 0, cellwidth = 40, cellheight = 30)
-  dev.off()
-  
-  p_tf_dot <- ggplot(tf_family_combined %>% filter(`P-value` < 0.05),
-                     aes(x = factor(Cluster), y = TF_Family)) +
-    geom_point(aes(size = neg_log_p, color = neg_log_p)) +
-    scale_size_continuous(range = c(2, 12), name = "-log10(P)") +
-    scale_color_gradient(low = "lightblue", high = "darkred", name = "-log10(P)") +
-    theme_bw() +
-    labs(title = "TF Family Enrichment by Cluster", subtitle = "Only showing p < 0.05",
-         x = "Cluster", y = "TF Family")
-  print(p_tf_dot)
-  ggsave(file.path(homer_promoter_dir, "TF_family_dotplot_promoters.pdf"), p_tf_dot, width = 8, height = 6)
+
+  # Save heatmap
+  pheatmap(tf_summary_matrix,
+           cluster_rows = FALSE, cluster_cols = FALSE,
+           color = colorRampPalette(c("white","pink","red","darkred"))(100),
+           main = "TF Family Enrichment Across Clusters\n(Max -log10 P-value per family)",
+           display_numbers = TRUE, number_format = "%.1f",
+           fontsize = 11, angle_col = 0,
+           cellwidth = 40, cellheight = 30,
+           filename = file.path(homer_promoter_dir, "TF_family_heatmap_promoters.pdf"),
+           width = 10, height = 6)
+
+  # Create heatmap object for display
+  tf_heatmap_plot <- pheatmap(tf_summary_matrix,
+                              cluster_rows = FALSE, cluster_cols = FALSE,
+                              color = colorRampPalette(c("white","pink","red","darkred"))(100),
+                              main = "TF Family Enrichment Across Clusters\n(Max -log10 P-value per family)",
+                              display_numbers = TRUE, number_format = "%.1f",
+                              fontsize = 11, angle_col = 0,
+                              cellwidth = 40, cellheight = 30)
+
+  tf_sig <- tf_family_combined %>% filter(`P-value` < 0.05)
+
+  if (nrow(tf_sig) > 0) {
+
+    tf_dot_plot <- ggplot(tf_sig,
+                          aes(x = factor(Cluster), y = TF_Family)) +
+      geom_point(aes(size = neg_log_p, color = neg_log_p)) +
+      scale_size_continuous(range = c(2, 12)) +
+      scale_color_gradient(low = "lightblue", high = "darkred") +
+      theme_bw() +
+      labs(title = "TF Family Enrichment by Cluster",
+           subtitle = "Only showing p < 0.05",
+           x = "Cluster", y = "TF Family")
+
+    ggsave(file.path(homer_promoter_dir,
+                     "TF_family_dotplot_promoters.pdf"),
+           tf_dot_plot, width = 8, height = 6)
+  }
 }
+
+# ---- PRINT OUTSIDE IF BLOCK ----
+
+if (!is.null(tf_heatmap_plot)) tf_heatmap_plot
+if (!is.null(tf_dot_plot)) print(tf_dot_plot)
 
 cat("\n=== HOMER PROMOTER VISUALIZATIONS COMPLETE — saved to Clusters/homer_promoter_motifs/ ===\n")
 ```
@@ -1672,8 +1691,9 @@ p_peaks_cluster_summary <- ggplot(cluster_peaks_enrichment_stats,
 print(p_peaks_cluster_summary)
 ggsave(file.path(homer_chip_dir, "motif_sig_count_per_cluster_chip_peaks.pdf"),
        p_peaks_cluster_summary, width = 8, height = 6)
+```
 
-# 4. TF family enrichment
+```{r TF-Family Plots Chip-seq}
 tf_peaks_family_enrichment <- list()
 for (family_name in names(tf_families)) {
   patterns <- tf_families[[family_name]]
@@ -1697,14 +1717,19 @@ if (nrow(tf_peaks_family_combined) > 0) {
   tf_peaks_mat$n_motifs  <- NULL
   tf_peaks_mat <- as.matrix(tf_peaks_mat)
   
-  pdf(file.path(homer_chip_dir, "TF_family_heatmap_chip_peaks.pdf"), width = 10, height = 6)
+  pheatmap(tf_peaks_mat, cluster_rows = FALSE, cluster_cols = FALSE,
+    color = colorRampPalette(c("white","pink","red","darkred"))(100),
+    main = "TF Family Enrichment in ChIP Peaks Across Clusters\n(Max -log10 P-value per family)",
+    filename = file.path(homer_chip_dir, "TF_family_heatmap_chip_peaks.pdf"),
+    display_numbers = TRUE, number_format = "%.1f", fontsize = 11,
+    angle_col = 0, cellwidth = 40, cellheight = 30)
+  
   pheatmap(tf_peaks_mat, cluster_rows = FALSE, cluster_cols = FALSE,
     color = colorRampPalette(c("white","pink","red","darkred"))(100),
     main = "TF Family Enrichment in ChIP Peaks Across Clusters\n(Max -log10 P-value per family)",
     display_numbers = TRUE, number_format = "%.1f", fontsize = 11,
     angle_col = 0, cellwidth = 40, cellheight = 30)
-  dev.off()
-  
+
   p_peaks_tf_dot <- ggplot(tf_peaks_family_combined %>% filter(`P-value` < 0.05),
     aes(x = factor(Cluster), y = TF_Family)) +
     geom_point(aes(size = neg_log_p, color = neg_log_p)) +
