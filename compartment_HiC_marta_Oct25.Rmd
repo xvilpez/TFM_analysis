@@ -1,0 +1,1002 @@
+---
+title: "Hi-C Cscore Compartment Analysis – REH samples"
+author: ""
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    code_folding: hide
+    fig_width: 8
+    fig_height: 6
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center"
+)
+knitr::opts_knit$set(root.dir = "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore")
+```
+
+---
+
+# Overview
+
+This notebook analyses **A/B chromatin compartments** inferred from Hi-C data using
+Cscore bedgraph files for three conditions:
+
+| Condition | Description | Files |
+|-----------|-------------|-------|
+| **REH** | Parental cell line | `REH_tp.bedgraph_correct.bedgraph` |
+| **EP1** | EP1 treatment | `HiC-REH-EP1-{1,2}_tp…` + merged |
+| **EP1-Aro** | EP1 + Aromatic treatment | `HiC-REH-EP1-Aro-{1,2}_tp…` + merged |
+
+**Analysis steps:**
+
+1. Load & merge all bedgraph files  
+2. QC: PCA and Spearman correlation across replicates and merged samples  
+3. A/B compartment classification  
+4. Compartment switching dynamics  
+5. Heatmap of cscore values  
+
+---
+
+# 1. Libraries
+
+```{r libraries}
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+library(ggrepel)
+library(pheatmap)
+library(viridis)
+library(tidyr)
+library(grid)
+library(cowplot)
+```
+
+---
+
+# 2. Data loading
+
+All bedgraph files are loaded from the cscore iteration trial directory.
+Each file contains four columns: `chr`, `start`, `end`, and the cscore `score`.
+
+```{r load-data}
+data_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore"
+
+read_cscore <- function(filename, score_colname) {
+  read.table(file.path(data_dir, filename),
+             sep       = "\t",
+             col.names = c("chr", "start", "end", score_colname))
+}
+
+# Individual replicates
+REH        <- read_cscore("REH_tp.bedgraph_correct.bedgraph",           "score_REH")
+EP1_1      <- read_cscore("HiC-REH-EP1-1_tp.bedgraph_correct.bedgraph", "score_EP1_1")
+EP1_2      <- read_cscore("HiC-REH-EP1-2_tp.bedgraph_correct.bedgraph", "score_EP1_2")
+EP1_Aro_1  <- read_cscore("HiC-REH-EP1-Aro-1_tp.bedgraph_correct.bedgraph", "score_EP1_Aro_1")
+EP1_Aro_2  <- read_cscore("HiC-REH-EP1-Aro-2_tp.bedgraph_correct.bedgraph", "score_EP1_Aro_2")
+
+# Merged replicates
+EP1_merge     <- read_cscore("HiC-REH-EP1_tp.bedgraph_correct.bedgraph",     "score_EP1_merge")
+EP1_Aro_merge <- read_cscore("HiC-REH-EP1-Aro_tp.bedgraph_correct.bedgraph", "score_EP1_Aro_merge")
+```
+
+## 2.1 Merge into a single dataframe
+
+All files are merged by genomic coordinates (`chr`, `start`, `end`).
+
+```{r merge-data}
+cs_REH <- Reduce(
+  function(x, y) merge(x, y, by = c("chr", "start", "end")),
+  list(REH, EP1_1, EP1_2, EP1_Aro_1, EP1_Aro_2, EP1_merge, EP1_Aro_merge)
+)
+
+cat("Columns:", paste(colnames(cs_REH), collapse = ", "), "\n")
+
+head(cs_REH)
+```
+
+---
+
+# 3. Quality Control
+
+## 3.1 PCA
+
+PCA is run on the transposed cscore matrix (samples as rows, genomic bins as
+columns) to assess whether:
+
+- Replicates of the same condition cluster tightly together  
+- Merged samples fall close to their corresponding replicates  
+- The three conditions separate along the principal components  
+
+**Shape legend:** circles = parental REH, squares = individual replicates, triangles = merged.  
+**Colour legend:** condition.
+
+```{r pca}
+sample_labels <- c("REH", "EP1_1", "EP1_2", "EP1_Aro_1", "EP1_Aro_2",
+                   "EP1_merge", "EP1_Aro_merge")
+
+cscore_matrix           <- as.matrix(cs_REH[, 4:10])
+colnames(cscore_matrix) <- sample_labels
+cscore_matrix           <- na.omit(cscore_matrix)
+
+# remove bins with zero variance
+cscore_matrix <- cscore_matrix[apply(cscore_matrix, 1, var) != 0, ]
+
+# PCA
+PCA_REH <- prcomp(t(cscore_matrix), scale. = TRUE)
+pct_var <- round(100 * PCA_REH$sdev^2 / sum(PCA_REH$sdev^2), 1)
+
+# Build plot dataframe
+pca_df            <- as.data.frame(PCA_REH$x)
+pca_df$sample     <- sample_labels
+pca_df$condition  <- c("REH", "EP1", "EP1", "EP1_Aro", "EP1_Aro", "EP1", "EP1_Aro")
+pca_df$type       <- c("original", "replicate", "replicate",
+                        "replicate", "replicate", "merge", "merge")
+
+# Colour and shape scales
+cond_colors <- c("REH"     = "#e74c3c",
+                 "EP1"     = "#3498db",
+                 "EP1_Aro" = "#2ecc71")
+
+type_shapes <- c("original"  = 21,
+                 "replicate" = 22,
+                 "merge"     = 24)
+
+ggplot(pca_df, aes(x = PC1, y = PC2,
+                   fill  = condition,
+                   shape = type,
+                   label = sample)) +
+  geom_point(color = "black", stroke = 1.3, size = 5) +
+  geom_text_repel(size = 4, max.overlaps = 20) +
+  scale_fill_manual(values = cond_colors) +
+  scale_shape_manual(values = type_shapes) +
+  theme_bw() +
+  labs(
+    title = "Cscore PCA – REH samples (replicates + merges)",
+    x     = paste0("PC1 (", pct_var[1], "% variance)"),
+    y     = paste0("PC2 (", pct_var[2], "% variance)")
+  ) +
+  theme(
+    panel.grid   = element_blank(),
+    plot.title   = element_text(size = 15, face = "bold", hjust = 0.5),
+    axis.title   = element_text(size = 13),
+    axis.text    = element_text(size = 11),
+    legend.title = element_text(size = 11),
+    legend.text  = element_text(size = 10)
+  ) +
+  guides(
+    fill  = guide_legend(title = "Condition", override.aes = list(shape = 21)),
+    shape = guide_legend(title = "Type")
+  )
+```
+
+Now we remove some problematic regions that we detected through IGV visualization of the bedgraphs
+
+```{r Problematic regions removal + PCA after correction}
+# Regions to remove
+chr4_start  <- 127470171
+chr4_end    <- 141890371
+
+chr21_start <- 4514218
+chr21_end   <- 12001870
+
+# Function to correct a bedgraph
+correct_bedgraph <- function(df, score_col, flip_chr13 = FALSE){
+
+  # remove chr4 problematic region
+  df <- df[!(df$chr == "chr4" &
+             df$end   >= chr4_start &
+             df$start <= chr4_end), ]
+
+  # remove chr21 problematic region
+  df <- df[!(df$chr == "chr21" &
+             df$end   >= chr21_start &
+             df$start <= chr21_end), ]
+
+  # flip chr13 if required
+  if(flip_chr13){
+    df[df$chr == "chr13", score_col] <- -df[df$chr == "chr13", score_col]
+  }
+
+  return(df)
+}
+
+# List all samples
+samples <- list(
+  REH            = list(df = REH,           col = "score_REH",            flip = TRUE),
+  EP1_1          = list(df = EP1_1,         col = "score_EP1_1",          flip = TRUE),
+  EP1_2          = list(df = EP1_2,         col = "score_EP1_2",          flip = FALSE),
+  EP1_Aro_1      = list(df = EP1_Aro_1,     col = "score_EP1_Aro_1",      flip = TRUE),
+  EP1_Aro_2      = list(df = EP1_Aro_2,     col = "score_EP1_Aro_2",      flip = TRUE),
+  EP1_merge      = list(df = EP1_merge,     col = "score_EP1_merge",      flip = TRUE),
+  EP1_Aro_merge  = list(df = EP1_Aro_merge, col = "score_EP1_Aro_merge",  flip = TRUE)
+)
+
+# Apply correction to all samples
+corrected <- list()
+
+for(name in names(samples)){
+
+  sample_info <- samples[[name]]
+
+  df_corr <- correct_bedgraph(
+    sample_info$df,
+    sample_info$col,
+    sample_info$flip
+  )
+
+  # store corrected dataframe
+  corrected[[name]] <- df_corr
+
+  outfile <- paste0(name, "_manual_corrected.bedgraph")
+  
+  # write.table(
+  #   df_corr,
+  #   outfile,
+  #   sep = "\t",
+  #   quote = FALSE,
+  #   row.names = FALSE,
+  #   col.names = FALSE
+  # )
+
+  cat("Saved:", outfile, "\n")
+}
+```
+
+### Re-merge corrected samples
+
+```{r merge-corrected}
+cs_REH_corr <- Reduce(
+  function(x, y) merge(x, y, by = c("chr", "start", "end")),
+  list(corrected$REH,
+       corrected$EP1_1,
+       corrected$EP1_2,
+       corrected$EP1_Aro_1,
+       corrected$EP1_Aro_2,
+       corrected$EP1_merge,
+       corrected$EP1_Aro_merge)
+)
+
+cat("Bins in corrected merged dataframe:", nrow(cs_REH_corr), "\n")
+```
+
+## 3.4 PCA (post-correction)
+
+Re-run the same PCA on the corrected data. Samples should now cluster more
+cleanly by condition, with replicates tighter and the chr4/chr13 artefacts
+no longer driving separation.
+
+```{r pca-corrected}
+cscore_matrix_corr           <- as.matrix(cs_REH_corr[, 4:10])
+colnames(cscore_matrix_corr) <- sample_labels
+cscore_matrix_corr           <- na.omit(cscore_matrix_corr)
+cscore_matrix_corr           <- cscore_matrix_corr[apply(cscore_matrix_corr, 1, var) != 0, ]
+
+cat("Bins used for post-correction PCA:", nrow(cscore_matrix_corr), "\n")
+
+PCA_corr <- prcomp(t(cscore_matrix_corr), scale. = TRUE)
+pct_var_corr <- round(100 * PCA_corr$sdev^2 / sum(PCA_corr$sdev^2), 1)
+
+pca_df_corr            <- as.data.frame(PCA_corr$x)
+pca_df_corr$sample     <- sample_labels
+pca_df_corr$condition  <- c("REH", "EP1", "EP1", "EP1_Aro", "EP1_Aro", "EP1", "EP1_Aro")
+pca_df_corr$type       <- c("original", "replicate", "replicate",
+                             "replicate", "replicate", "merge", "merge")
+
+ggplot(pca_df_corr, aes(x = PC1, y = PC2,
+                        fill  = condition,
+                        shape = type,
+                        label = sample)) +
+  geom_point(color = "black", stroke = 1.3, size = 5) +
+  geom_text_repel(size = 4, max.overlaps = 20) +
+  scale_fill_manual(values = cond_colors) +
+  scale_shape_manual(values = type_shapes) +
+  theme_bw() +
+  labs(
+    title = "Cscore PCA – post-correction (replicates + merges)",
+    x     = paste0("PC1 (", pct_var_corr[1], "% variance)"),
+    y     = paste0("PC2 (", pct_var_corr[2], "% variance)")
+  ) +
+  theme(
+    panel.grid   = element_blank(),
+    plot.title   = element_text(size = 15, face = "bold", hjust = 0.5),
+    axis.title   = element_text(size = 13),
+    axis.text    = element_text(size = 11),
+    legend.title = element_text(size = 11),
+    legend.text  = element_text(size = 10)
+  ) +
+  guides(
+    fill  = guide_legend(title = "Condition", override.aes = list(shape = 21)),
+    shape = guide_legend(title = "Type")
+  )
+```
+
+## 3.2 Spearman correlation matrix
+
+Pairwise Spearman correlation between all samples. Values close to 1 between
+replicates of the same condition indicate good reproducibility.
+
+```{r correlation}
+cor_mat <- cor(cscore_matrix, method = "spearman")
+
+ggplot(melt(cor_mat), aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  geom_text(aes(label = round(value, 2)), size = 3.2) +
+  coord_equal() +
+  theme_bw() +
+  theme(
+    axis.text.x  = element_text(angle = 45, hjust = 1, vjust = 1, size = 9),
+    axis.text.y  = element_text(size = 9),
+    plot.title   = element_text(hjust = 0.5, face = "bold")
+  ) +
+  labs(title = "Spearman Correlation – Cscore (all samples)", x = "", y = "")
+```
+
+---
+
+# 4. A/B Compartment classification
+
+> **All downstream analyses use the corrected merged data (`cs_REH_corr`).**
+
+Bins with **cscore > 0** are assigned to **compartment A** (open, active chromatin)
+and bins with **cscore ≤ 0** to **compartment B** (closed, inactive chromatin).
+Classification is performed on the **merged** samples only for downstream
+biological interpretation.
+
+```{r compartment-classification}
+cs_REH_merge <- cs_REH_corr %>%
+  select(chr, start, end,
+         score_REH, score_EP1_merge, score_EP1_Aro_merge) %>%
+  mutate(
+    comp_REH     = ifelse(score_REH > 0,             "A", "B"),
+    comp_EP1     = ifelse(score_EP1_merge > 0,       "A", "B"),
+    comp_EP1_Aro = ifelse(score_EP1_Aro_merge > 0,   "A", "B")
+  )
+
+# Pairwise columns kept for reference; three-way switching is the main analysis variable
+cs_REH_merge <- cs_REH_merge %>%
+  mutate(
+    dyn_REH_EP1    = paste(comp_REH, comp_EP1,     sep = "_"),
+    dyn_EP1_EP1Aro = paste(comp_EP1, comp_EP1_Aro, sep = "_"),
+    dyn_all        = paste(comp_REH, comp_EP1, comp_EP1_Aro, sep = "_")
+  )
+
+# Summary table
+summary_comp <- data.frame(
+  Condition = c("REH", "EP1", "EP1_Aro"),
+  A_bins    = c(sum(cs_REH_merge$comp_REH == "A"),
+                sum(cs_REH_merge$comp_EP1 == "A"),
+                sum(cs_REH_merge$comp_EP1_Aro == "A")),
+  B_bins    = c(sum(cs_REH_merge$comp_REH == "B"),
+                sum(cs_REH_merge$comp_EP1 == "B"),
+                sum(cs_REH_merge$comp_EP1_Aro == "B"))
+) %>%
+  mutate(
+    Total   = A_bins + B_bins,
+    Pct_A   = round(A_bins / Total * 100, 1),
+    Pct_B   = round(B_bins / Total * 100, 1)
+  )
+
+knitr::kable(summary_comp, caption = "A/B compartment counts per condition (merged samples)")
+```
+
+## 4.1 A/B barplot
+
+```{r ab-barplot}
+dt_merge <- rbind(
+  table(cs_REH_merge$comp_REH),
+  table(cs_REH_merge$comp_EP1),
+  table(cs_REH_merge$comp_EP1_Aro)
+)
+rownames(dt_merge) <- c("REH", "EP1", "EP1_Aro")
+
+ggplot(melt(dt_merge), aes(fill = Var1, x = Var2, y = value)) +
+  geom_bar(position = "dodge", stat = "identity",
+           width = 0.7, color = "black") +
+  scale_fill_manual(values = c("REH" = "#e74c3c",
+                               "EP1" = "#3498db",
+                               "EP1_Aro" = "#2ecc71")) +
+  theme_bw() +
+  theme(
+    panel.grid   = element_blank(),
+    axis.text    = element_text(size = 12, face = "bold"),
+    axis.title   = element_text(size = 14),
+    plot.title   = element_text(size = 15, face = "bold", hjust = 0.5),
+    legend.title = element_blank()
+  ) +
+  xlab("") + ylab("Number of bins") +
+  labs(title = "A/B compartments – merged samples")
+```
+
+```{r Proportion barplot}
+# Build proportion data from all samples (replicates + merges)
+prop_df <- data.frame(
+  Sample = c("REH", "EP1_1", "EP1_2", "EP1_Aro_1", "EP1_Aro_2", "EP1_merge", "EP1_Aro_merge"),
+  A = c(sum(cs_REH_merge$comp_REH == "A"),
+        sum(corrected$EP1_1$score_EP1_1 > 0),
+        sum(corrected$EP1_2$score_EP1_2 > 0),
+        sum(corrected$EP1_Aro_1$score_EP1_Aro_1 > 0),
+        sum(corrected$EP1_Aro_2$score_EP1_Aro_2 > 0),
+        sum(cs_REH_merge$comp_EP1 == "A"),
+        sum(cs_REH_merge$comp_EP1_Aro == "A")),
+  B = c(sum(cs_REH_merge$comp_REH == "B"),
+        sum(corrected$EP1_1$score_EP1_1 <= 0),
+        sum(corrected$EP1_2$score_EP1_2 <= 0),
+        sum(corrected$EP1_Aro_1$score_EP1_Aro_1 <= 0),
+        sum(corrected$EP1_Aro_2$score_EP1_Aro_2 <= 0),
+        sum(cs_REH_merge$comp_EP1 == "B"),
+        sum(cs_REH_merge$comp_EP1_Aro == "B"))
+) %>%
+  mutate(Total  = A + B,
+         Pct_A  = A / Total * 100,
+         Pct_B  = B / Total * 100) %>%
+  pivot_longer(cols = c(Pct_A, Pct_B),
+               names_to  = "Compartment",
+               values_to = "Proportion") %>%
+  mutate(Compartment = recode(Compartment, "Pct_A" = "A", "Pct_B" = "B"),
+         Sample = factor(Sample, levels = c("REH","EP1_1","EP1_2",
+                                             "EP1_merge","EP1_Aro_1",
+                                             "EP1_Aro_2","EP1_Aro_merge")))
+
+ggplot(prop_df, aes(x = Sample, y = Proportion, fill = Compartment)) +
+  geom_bar(stat = "identity", color = "black", linewidth = 0.4) +
+  geom_text(aes(label = paste0(round(Proportion, 1), "%")),
+            position = position_stack(vjust = 0.5),
+            size = 3.8, fontface = "bold", color = "white") +
+  scale_fill_manual(values = c("A" = "#f0a500", "B" = "#6c3483")) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 101)) +
+  theme_bw() +
+  theme(
+    panel.grid   = element_blank(),
+    axis.text.x  = element_text(size = 11, angle = 30, hjust = 1, face = "bold"),
+    axis.text.y  = element_text(size = 10),
+    axis.title   = element_text(size = 13),
+    plot.title   = element_text(size = 14, face = "bold", hjust = 0.5),
+    legend.title = element_text(face = "bold")
+  ) +
+  xlab("") + ylab("Proportion (%)") +
+  labs(title = "A/B compartment proportions per sample")
+```
+
+---
+
+# 5. Compartment switching patterns across experimental conditions
+
+Although the conditions are shown in the order REH → EP1 → EP1_Aro for visualization purposes, these samples represent independent transfections rather than a true temporal series. Therefore, the switchectories describe compartment state combinations across conditions, not a biological time course.
+
+Each genomic bin is tracked across all three conditions and assigned one of
+**8 switching classes** (2³ combinations of A/B states). This reveals not
+just whether a bin switches, but *when* across the different conditions.
+
+| switching | Interpretation |
+|------------|----------------|
+| A_A_A | Constitutively active |
+| B_B_B | Constitutively inactive |
+| B_A_A | Activation at EP1 variants |
+| B_B_A | Aro-specific activation |
+| A_B_B | Inactivation at EP1 variants |
+| A_A_B | Aro-specific inactivation |
+| A_B_A | EP1-specific inactivation |
+| B_A_B | EP1-specific activation |
+
+## 5.1 Switching classification
+
+```{r switching-classification}
+# The dyn_all column (REH_EP1_EP1Aro) was already created in section 4
+# Reorder factor levels for logical display
+switching_levels <- c(
+  "A_A_A", "B_B_B",          # constitutive
+  "B_A_A", "B_B_A",          # gained A
+  "A_B_B", "A_A_B",          # gained B
+  "A_B_A", "B_A_B"           # transient
+)
+
+switching_labels <- c(
+  "A_A_A" = "Constitutive A",
+  "B_B_B" = "Constitutive B",
+  "B_A_A" = "A gain (EP1, stable)",
+  "B_B_A" = "A gain (EP1_Aro)",
+  "A_B_B" = "B gain (EP1, stable)",
+  "A_A_B" = "B gain (EP1_Aro)",
+  "A_B_A" = "B gain (EP1, specific)",
+  "B_A_B" = "A gain (EP1, specific)"
+)
+
+# Colour palette: warm = A-dominant, cool = B-dominant, grey = constitutive B
+switching_colors <- c(
+  "A_A_A" = "#d5e8d4",   # pale green  – constitutive A
+  "B_B_B" = "#dae8fc",   # pale blue   – constitutive B
+  "B_A_A" = "#f0a500",   # amber       – A gain, maintained
+  "B_B_A" = "#f9d08b",   # light amber – A gain Aro
+  "A_B_B" = "#6c3483",   # purple      – B gain, maintained
+  "A_A_B" = "#c39bd3",   # light purple– B gain Aro
+  "A_B_A" = "#e74c3c",   # red         – B gain EP1
+  "B_A_B" = "#2ecc71"    # green       – A gain EP1
+)
+
+cs_REH_merge$switching <- factor(cs_REH_merge$dyn_all,
+                                   levels = switching_levels)
+
+switch_counts <- as.data.frame(table(switching = cs_REH_merge$switching)) %>%
+  mutate(
+    Label      = switching_labels[as.character(switching)],
+    Pct        = round(Freq / nrow(cs_REH_merge) * 100, 2),
+    Group      = case_when(
+      switching %in% c("A_A_A", "B_B_B") ~ "Constitutive",
+      switching %in% c("B_A_A", "B_B_A") ~ "Gain A",
+      switching %in% c("A_B_B", "A_A_B") ~ "Gain B",
+      TRUE                                 ~ "Transient"
+    )
+  )
+
+knitr::kable(switch_counts[, c("switching", "Label", "Freq", "Pct", "Group")],
+             col.names = c("switching", "Description", "Bins", "% total", "Group"),
+             caption   = "Bin counts per switching across REH → EP1 → EP1_Aro")
+```
+
+## 5.2 Bar plot of switching counts
+
+```{r switching-barplot, fig.width=10, fig.height=5}
+# Exclude constitutive bins for a clearer view of dynamics (optional – toggle below)
+switch_dynamic <- switch_counts[!switch_counts$switching %in% c("A_A_A", "B_B_B"), ]
+
+ggplot(switch_dynamic,
+       aes(x    = reorder(Label, -Freq),
+           y    = Freq,
+           fill = switching)) +
+  geom_bar(stat = "identity", color = "black", width = 0.7) +
+  geom_text(aes(label = paste0(Pct, "%")),
+            vjust = -0.4, size = 3.5, fontface = "bold") +
+  scale_fill_manual(values = switching_colors) +
+  theme_bw() +
+  theme(
+    panel.grid    = element_blank(),
+    axis.text.x   = element_text(size = 10, angle = 30, hjust = 1),
+    axis.text.y   = element_text(size = 11),
+    axis.title    = element_text(size = 13),
+    plot.title    = element_text(size = 15, face = "bold", hjust = 0.5),
+    legend.position = "none"
+  ) +
+  xlab("") + ylab("Number of bins") +
+  labs(title = "Compartment switching patterns across conditions (REH, EP1, EP1_Aro)\n(constitutive bins excluded)")
+```
+
+## 5.3 Alluvial / Sankey plot of transitions
+
+The alluvial plot traces each bin's compartment state at each condition,
+making it easy to see the dominant flows between states.
+
+```{r Alluvial / Sankey plot}
+library(ggalluvial)
+
+ggplot(alluv_sum,
+       aes(x        = Condition,
+           y        = Freq,
+           stratum  = Compartment,
+           alluvium = switching,
+           fill     = switching,
+           label    = Compartment)) +
+  geom_alluvium(alpha     = 0.55,        # ← use geom_alluvium instead of geom_flow
+                color     = NA,
+                linewidth = 0) +
+  geom_stratum(alpha     = 0.88,
+               color     = "white",
+               linewidth = 0.6) +
+  geom_text(stat     = "stratum",
+            size     = 5,
+            fontface = "bold",
+            color    = "white") +
+  scale_fill_manual(values = switching_colors,
+                    labels = switching_labels,
+                    name   = "switching") +
+  scale_y_continuous(expand = c(0, 0)) +
+  theme_minimal(base_size = 13) +
+  theme(
+    panel.grid      = element_blank(),
+    axis.text.x     = element_text(size = 14, face = "bold", color = "gray20"),
+    axis.text.y     = element_text(size = 10, color = "gray40"),
+    axis.title.y    = element_text(size = 13, color = "gray30"),
+    plot.title      = element_text(size = 15, face = "bold", hjust = 0.5,
+                                   margin = margin(b = 12)),
+    plot.background = element_rect(fill = "gray97", color = NA),
+    legend.text     = element_text(size = 9),
+    legend.title    = element_text(size = 10, face = "bold")
+  ) +
+  xlab("") + ylab("Number of bins") +
+  labs(title = "Compartment state distribution across conditions (REH, EP1, EP1_Aro)")
+```
+
+## 5.4 Pie chart of dynamic bins only
+
+Among bins that change state at least once across the three conditions.
+
+```{r pie-dynamic, fig.width=7, fig.height=7}
+pie_df <- as.data.frame(table(switching = dynamic_bins$switching)) %>%
+  filter(Freq > 0) %>%
+  mutate(
+    Label    = switching_labels[as.character(switching)],  # human-readable
+    Pct      = round(Freq / n_dynamic * 100, 1),
+    PieLabel = paste0(Pct, "%")                            # just % on slice, full name in legend
+  )
+
+ggplot(pie_df, aes(x = "", y = Freq, fill = switching)) +
+  geom_col(width = 1, color = "black", linewidth = 1.1) +
+  geom_text(aes(label = PieLabel),
+            position = position_stack(vjust = 0.5),
+            size = 4, fontface = "bold", color = "white") +
+  coord_polar(theta = "y", start = 0) +
+  scale_fill_manual(values = switching_colors,
+                    labels = switching_labels,   # ← legend uses full names
+                    name   = "Switching") +
+  theme_void() +
+  ggtitle(paste0("Dynamic bins: n = ", n_dynamic,
+                 " (", round(n_dynamic / n_total * 100, 1), "% of all bins)")) +
+  theme(
+    plot.title      = element_text(hjust = 0.5, size = 13, face = "bold"),
+    legend.text     = element_text(size = 10),
+    legend.title    = element_text(size = 11, face = "bold"),
+    legend.position = "right"
+  )
+```
+
+## 5.5 Summary: switching groups
+
+```{r switching-summary-table}
+group_summary <- switch_counts %>%
+  group_by(Group) %>%
+  summarise(
+    Bins        = sum(Freq),
+    Pct_total   = round(sum(Freq) / nrow(cs_REH_merge) * 100, 1),
+    switchectories = paste(switching, collapse = ", ")
+  ) %>%
+  arrange(desc(Bins))
+
+knitr::kable(group_summary,
+             col.names = c("Group", "Bins", "% of total", "switchectories"),
+             caption   = "Compartment switching groups – REH → EP1 → EP1_Aro")
+```
+
+
+## 5.6 Heatmap
+
+```{r heatmap, fig.width=12, fig.height=16, fig.align="center"}
+# ------------------------------
+# Filter dynamic bins and complete cases
+# ------------------------------
+dynamic_bins_complete <- cs_REH_merge %>%
+  filter(!switching %in% c("A_A_A", "B_B_B")) %>%
+  filter(!is.na(score_REH) & !is.na(score_EP1_merge) & !is.na(score_EP1_Aro_merge)) %>%
+  arrange(switching)
+
+# ------------------------------
+# Prepare heatmap matrix
+# ------------------------------
+cscore_heat_dyn <- as.matrix(dynamic_bins_complete[, c("score_REH", "score_EP1_merge", "score_EP1_Aro_merge")])
+rownames(cscore_heat_dyn) <- rownames(dynamic_bins_complete)
+colnames(cscore_heat_dyn) <- c("REH", "EP1", "EP1_Aro")
+
+# ------------------------------
+# Prepare row annotation
+# ------------------------------
+annot_row <- data.frame(
+  Switching = factor(dynamic_bins_complete$switching,
+                     levels = switching_levels[!switching_levels %in% c("A_A_A","B_B_B")])
+)
+rownames(annot_row) <- rownames(cscore_heat_dyn)
+
+# ------------------------------
+# Prepare annotation colors (robust)
+# ------------------------------
+annot_colors <- list()
+for (col in colnames(annot_row)) {
+  # Only use levels present in the data
+  annot_colors[[col]] <- switching_colors[levels(annot_row[[col]])]
+}
+
+# ------------------------------
+# Heatmap colors
+# ------------------------------
+heat_colors <- colorRampPalette(c("blue", "white", "red"))(1000)
+
+# ------------------------------
+# Plot heatmap
+# ------------------------------
+pheatmap(cscore_heat_dyn,
+         color             = heat_colors,
+         cluster_rows      = TRUE,
+         cluster_cols      = FALSE,
+         show_rownames     = FALSE,
+         annotation_row    = annot_row,
+         annotation_colors = annot_colors,
+         annotation_names_row = FALSE,   # ← removes the "Switching" label that gets clipped
+         treeheight_row    = 50,
+         scale             = "row",
+         fontsize          = 12,
+         fontsize_col      = 13,
+         angle_col         = 45,
+         legend_breaks     = c(-1, -0.5, 0, 0.5, 1),
+         main              = "Cscore Heatmap – Dynamic bins only (REH / EP1 / EP1_Aro)",
+
+         # fix margins: top, right, bottom, left
+         # increases left margin so annotation bar isn't clipped
+         mar               = c(4, 6, 4, 10))
+```
+
+---
+# 6. Gene enrichment analysis on dynamic compartments
+
+```{r Enrichment analysis}
+# ============================================================================
+# Compartment Switching – Enrichment Analysis (GenomicRanges + enrichR)
+# ============================================================================
+library(GenomicRanges)
+library(enrichR)
+library(dplyr)
+library(ggplot2)
+
+# ----------------------------------------------------------------------------
+# 1. Load gene annotation BED (gencode v28)
+# ----------------------------------------------------------------------------
+genes_bed <- read.table("R:/R_STIK/xavi_scripts/genes_gencode.v28.bed",
+                        sep       = "\t",
+                        header    = FALSE,
+                        col.names = c("chrom", "start", "end", "strand",
+                                      "gene_name", "ID", "description")) %>%
+  select(chrom, start, end, gene_name) %>%
+  mutate(start = as.integer(start),
+         end   = as.integer(end))
+
+# Convert gene annotation to GRanges once (reused in every overlap)
+genes_gr <- makeGRangesFromDataFrame(genes_bed,
+                                     seqnames.field      = "chrom",
+                                     start.field         = "start",
+                                     end.field           = "end",
+                                     keep.extra.columns  = TRUE)
+
+# ----------------------------------------------------------------------------
+# 2. Helper: get gene symbols overlapping a set of bins
+# ----------------------------------------------------------------------------
+get_genes_gr <- function(sw_class) {
+
+  bins <- cs_REH_merge %>%
+    filter(switching == sw_class) %>%
+    select(chrom = chr, start, end) %>%
+    mutate(start = as.integer(start),
+           end   = as.integer(end))
+
+  if (nrow(bins) == 0) return(character(0))
+
+  bins_gr <- makeGRangesFromDataFrame(bins,
+                                      seqnames.field = "chrom",
+                                      start.field    = "start",
+                                      end.field      = "end")
+
+  hits <- findOverlaps(bins_gr, genes_gr)
+  unique(genes_gr$gene_name[subjectHits(hits)])
+}
+
+# ----------------------------------------------------------------------------
+# 3. Build gene list for ALL 6 dynamic switching classes — explicit definition
+# ----------------------------------------------------------------------------
+
+# Explicitly define all 6 dynamic classes (never relies on switching_levels ordering)
+switching_dynamic_levels <- c("B_A_A",   # A gain (EP1, stable)
+                               "B_B_A",   # A gain (EP1_Aro)
+                               "A_B_B",   # B gain (EP1, stable)
+                               "A_A_B",   # B gain (EP1_Aro)
+                               "A_B_A",   # B gain (EP1, specific)
+                               "B_A_B")   # A gain (EP1, specific)
+
+# Confirm all 6 are actually present in your data before running enrichment
+class_counts <- table(cs_REH_merge$switching)
+cat("\nBin counts per dynamic switching class:\n")
+print(class_counts[switching_dynamic_levels])
+
+# Flag any class with 0 bins — these will be skipped automatically
+missing <- switching_dynamic_levels[
+  !switching_dynamic_levels %in% names(class_counts) | 
+   class_counts[switching_dynamic_levels] == 0
+]
+if (length(missing) > 0) {
+  cat("\nWARNING: These classes have 0 bins and will be skipped:", paste(missing, collapse = ", "), "\n")
+} else {
+  cat("\nAll 6 dynamic classes present in data. Proceeding with gene overlap.\n")
+}
+
+# Run overlaps for all 6
+switching_gene_lists <- lapply(
+  setNames(switching_dynamic_levels, switching_dynamic_levels),
+  get_genes_gr
+)
+
+# Summary: genes per class
+cat("\nGenes overlapping each switching class:\n")
+gene_summary <- data.frame(
+  switching = switching_dynamic_levels,
+  label     = switching_labels[switching_dynamic_levels],
+  n_genes   = sapply(switching_gene_lists, length)
+)
+print(gene_summary)
+
+# Flag classes with fewer than 5 genes (will be skipped by enrichR loop)
+too_few <- gene_summary[gene_summary$n_genes < 5, ]
+if (nrow(too_few) > 0) {
+  cat("\nWARNING: The following classes have <5 genes and will be skipped by enrichR:\n")
+  print(too_few)
+}
+
+# ----------------------------------------------------------------------------
+# 4. Output directories
+# ----------------------------------------------------------------------------
+dir.create("files/enrichr_compartments", showWarnings = FALSE, recursive = TRUE)
+dir.create("plots/enrichr_compartments", showWarnings = FALSE, recursive = TRUE)
+
+# ----------------------------------------------------------------------------
+# 5. Databases (same as RNA-seq analysis)
+# ----------------------------------------------------------------------------
+dbs <- c("GO_Biological_Process_2023",
+         "KEGG_2021_Human",
+         "WikiPathway_2023_Human",
+         "Reactome_2022",
+         "MSigDB_Hallmark_2020")
+
+websiteLive <- getOption("enrichR.live", TRUE)
+
+# ----------------------------------------------------------------------------
+# 6. Main enrichR loop — one switching class × one database at a time
+# ----------------------------------------------------------------------------
+
+# ============================================================================
+# HELPER: clean enrichR result table
+# Applies term-ID stripping (GO, Reactome, WikiPathway) uniformly and
+# computes gene_ratio. Works for any database.
+# ============================================================================
+process_enrichr_db <- function(db_result) {
+  df <- db_result %>%
+    separate(col = "Overlap", into = c("Gene_count", "total"), sep = "/",
+             convert = TRUE, extra = "drop", fill = "right")
+  df$gene_ratio <- df$Gene_count / df$total
+  # Strip embedded IDs from term names (present in GO, Reactome, WikiPathway)
+  df$Term <- gsub("\\s*\\(GO:\\d+\\)", "",   df$Term)
+  df$Term <- gsub("\\s*R-HSA-[0-9.]+",  "",  df$Term)
+  df$Term <- gsub("\\s*WP\\d+",         "",  df$Term)
+  df$Term <- trimws(df$Term)
+  df
+}
+
+# ============================================================================
+# HELPER: save gene lists + summary TSV for one direction x database x contrast
+# ============================================================================
+save_enrichr_genelists <- function(sig_terms, prefix, out_dir) {
+  # One summary TSV with all significant terms
+  sig_out <- sig_terms %>%
+    select(Term, Gene_count, total, gene_ratio, P.value, Adjusted.P.value, Genes) %>%
+    arrange(Adjusted.P.value)
+  write.table(sig_out,
+              file.path(out_dir, paste0(prefix, "_enrichment.tsv")),
+              sep = "\t", row.names = FALSE, quote = FALSE)
+}
+
+# ============================================================================
+# HELPER: bubble plot for enrichR results
+# ============================================================================
+plot_enrichr <- function(sig_terms, title_str, xlab_str) {
+  plot_data <- head(sig_terms, 20)
+  ggplot(plot_data, aes(x = Term, y = -log10(Adjusted.P.value))) +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "azure4", size = 0.5) +
+    geom_point(aes(size = Gene_count, colour = gene_ratio), alpha = 0.7) +
+    scale_x_discrete(limits = rev(plot_data$Term)) +
+    scale_color_gradient(low = "green", high = "red", limits = c(0, NA)) +
+    coord_flip() +
+    theme_bw() +
+    theme(axis.ticks.length    = unit(-0.1, "cm"),
+          axis.text.x          = element_text(margin = margin(5, 5, 0, 5, "pt")),
+          axis.text.y          = element_text(margin = margin(5, 5, 5, 5, "pt")),
+          axis.text            = element_text(color = "black"),
+          panel.grid.minor     = element_blank(),
+          legend.title.align   = 0.5,
+          plot.title           = element_text(hjust = 0.5, color = "black",
+                                              face = "bold", size = 14)) +
+    xlab(xlab_str) +
+    ylab("-log10(Adjusted P-value)") +
+    labs(color = "Gene Ratio", size = "Number\nof genes") +
+    ggtitle(title_str)
+}
+
+enrichr_compartment_results <- list()
+
+for (sw_class in switching_dynamic_levels) {
+
+  gene_vec <- switching_gene_lists[[sw_class]]
+  label    <- switching_labels[sw_class]
+
+  cat("\n=== Switching:", sw_class,
+      "| Label:", label,
+      "| Genes:", length(gene_vec), "===\n")
+
+  if (length(gene_vec) < 5 || !websiteLive) {
+    cat("  Skipping – too few genes or enrichR offline\n")
+    next
+  }
+
+  enriched <- enrichr(gene_vec, dbs)
+  enrichr_compartment_results[[sw_class]] <- enriched
+
+  for (db_idx in seq_along(dbs)) {
+    db_name <- dbs[db_idx]
+
+    if (is.null(enriched[[db_idx]]) || nrow(enriched[[db_idx]]) == 0) next
+
+    enriched_processed <- process_enrichr_db(enriched[[db_idx]])
+    sig_terms          <- subset(enriched_processed, Adjusted.P.value < 0.05)
+
+    if (nrow(sig_terms) == 0) {
+      cat("  No significant terms:", db_name, "\n")
+      next
+    }
+
+    # Save TSV
+    save_enrichr_genelists(
+      sig_terms,
+      prefix  = paste0(sw_class, "_", db_name),
+      out_dir = "files/enrichr_compartments"
+    )
+
+    # Plot
+    p <- plot_enrichr(
+      sig_terms,
+      title_str = paste0(db_name, "\n", label),
+      xlab_str  = paste0(db_name, " Terms")
+    )
+    print(p)
+
+    ggsave(
+      filename = file.path("plots/enrichr_compartments",
+                           paste0("enrichR_", db_name, "_", sw_class, ".pdf")),
+      plot   = p,
+      width  = 10,
+      height = 7
+    )
+
+    cat("  Saved:", db_name, "\n")
+  }
+}
+
+cat("\n=== Compartment enrichR analysis complete ===\n")
+```
+```
+
+---
+# . Save outputs
+
+```{r save}
+dir.create("files",  showWarnings = FALSE)
+dir.create("plots",  showWarnings = FALSE)
+
+# Save merged annotated table
+write.table(cs_REH_merge,
+            "files/cs_REH_merge.tab",
+            sep       = "\t",
+            quote     = FALSE,
+            col.names = TRUE,
+            row.names = FALSE)
+
+cat("Merged table saved to files/cs_REH_merge.tab\n")
+```
+
+---
+
+# Session info
+
+```{r session-info}
+sessionInfo()
+```
