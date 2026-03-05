@@ -13,22 +13,19 @@ knitr::opts_knit$set(root.dir = "R:/R_STIK/rna_seq/rnaseq_marta_REHAro_dec25") #
 
 ```{r initialization, warning=FALSE, message=FALSE}
 library(DESeq2)
-library(ggplot2)
+library(tidyverse)
 library(ggrepel)
 library(pheatmap)
 library(RColorBrewer)
 library(org.Hs.eg.db)
 library(AnnotationDbi)
-library(dplyr)
 library(vsn)
 library(limma)
-library(tidyr)
 library(clusterProfiler)
 library(enrichplot)
 library(DOSE)
 library(gridExtra)
 library(ReactomePA)
-library(stringr)
 library(factoextra)
 library(NbClust)
 library(ashr)
@@ -1423,6 +1420,18 @@ tf_dot_plot <- NULL
 
 if (nrow(tf_family_combined) > 0) {
 
+  # Create summary matrix for heatmap
+tf_summary <- tf_family_combined %>%
+  group_by(TF_Family, Cluster) %>%
+  summarise(max_neg_log_p = max(neg_log_p), .groups = "drop")
+
+tf_summary_matrix <- tf_summary %>%
+  pivot_wider(names_from = Cluster,
+              values_from = max_neg_log_p,
+              values_fill = 0) %>%
+  column_to_rownames("TF_Family") %>%
+  as.matrix()
+
   # Save heatmap
   pheatmap(tf_summary_matrix,
            cluster_rows = FALSE, cluster_cols = FALSE,
@@ -1892,60 +1901,282 @@ ggsave(file.path(loops_dir, "loop_anchor_LFC_violin_by_contrast.pdf"), p_contras
 
 cat("\n=== LOOP ANCHOR ANALYSIS COMPLETE — plots saved to Loops/ ===\n")
 cat(paste0("Output directory: ", loops_dir, "\n\n"))
+```
 
-# Print final directory summary
-cat("\n", strrep("=", 70), "\n", sep = "")
-cat("FINAL OUTPUT STRUCTURE\n")
-cat(strrep("=", 70), "\n\n")
-cat(paste0(output_dir, "/\n"))
-cat(paste0("├── QC/\n"))
-cat(paste0("│   ├── library_size.pdf\n"))
-cat(paste0("│   ├── PCA_before_batch_correction.pdf\n"))
-cat(paste0("│   ├── PCA_after_batch_correction.pdf\n"))
-cat(paste0("│   ├── heatmap_top500_before_batch_correction.pdf\n"))
-cat(paste0("│   ├── heatmap_top500_after_batch_correction.pdf\n"))
-cat(paste0("│   ├── PBX1_expression_barplot.pdf\n"))
-cat(paste0("│   └── PBX1_expression_boxplot.pdf\n"))
-cat(paste0("├── Contrasts/\n"))
-cat(paste0("│   ├── DEGs_<contrast>.tsv           [3 files]\n"))
-cat(paste0("│   ├── Volcano_<contrast>.pdf         [3 files]\n"))
-cat(paste0("│   ├── MA_raw_<contrast>.pdf          [3 files]\n"))
-cat(paste0("│   ├── MA_shrunk_<contrast>.pdf       [3 files]\n"))
-cat(paste0("│   ├── enrichR_<db>_<dir>_<contrast>.pdf\n"))
-cat(paste0("│   └── enrichment_gene_lists/\n"))
-cat(paste0("│       ├── <contrast>_<dir>_<db>_enrichment.tsv\n"))
-cat(paste0("│       └── <contrast>_<dir>_<db>_<term>_genes.txt\n"))
-cat(paste0("├── Clusters/\n"))
-cat(paste0("│   ├── kmeans_heatmap_k8.pdf\n"))
-cat(paste0("│   ├── kmeans_cluster_gene_membership.tsv\n"))
-cat(paste0("│   ├── ChIP_pct_genes_with_peak.pdf\n"))
-cat(paste0("│   ├── ChIP_peak_TSS_distance_boxplot.pdf\n"))
-cat(paste0("│   ├── ChIP_peak_TSS_distance_violin.pdf\n"))
-cat(paste0("│   ├── ChIP_peak_TSS_analysis_summary.tsv\n"))
-cat(paste0("│   ├── enrichR_<db>_Cluster<k>.pdf\n"))
-cat(paste0("│   ├── enrichment_gene_lists/\n"))
-cat(paste0("│   │   ├── Cluster<k>_<db>_enrichment.tsv\n"))
-cat(paste0("│   │   └── Cluster<k>_<db>_<term>_genes.txt\n"))
-cat(paste0("│   ├── homer_promoter_motifs/\n"))
-cat(paste0("│   │   ├── cluster_<k>_promoters.bed\n"))
-cat(paste0("│   │   ├── background_all_DEGs.bed\n"))
-cat(paste0("│   │   ├── motif_heatmap_promoters.pdf\n"))
-cat(paste0("│   │   ├── motif_dotplot_promoters.pdf\n"))
-cat(paste0("│   │   ├── motif_sig_count_per_cluster_promoters.pdf\n"))
-cat(paste0("│   │   ├── TF_family_heatmap_promoters.pdf\n"))
-cat(paste0("│   │   └── TF_family_dotplot_promoters.pdf\n"))
-cat(paste0("│   └── homer_chip_motifs/\n"))
-cat(paste0("│       ├── cluster_<k>_chip_peaks.bed\n"))
-cat(paste0("│       ├── background_*_chip_peaks.bed\n"))
-cat(paste0("│       ├── motif_heatmap_chip_peaks.pdf\n"))
-cat(paste0("│       ├── motif_dotplot_chip_peaks.pdf\n"))
-cat(paste0("│       ├── motif_sig_count_per_cluster_chip_peaks.pdf\n"))
-cat(paste0("│       ├── TF_family_heatmap_chip_peaks.pdf\n"))
-cat(paste0("│       └── TF_family_dotplot_chip_peaks.pdf\n"))
-cat(paste0("└── Loops/\n"))
-cat(paste0("    ├── loop_anchor_LFC_summary.tsv\n"))
-cat(paste0("    ├── loop_anchor_LFC_boxplot_by_category.pdf\n"))
-cat(paste0("    ├── loop_anchor_LFC_violin_specific_vs_shared.pdf\n"))
-cat(paste0("    └── loop_anchor_LFC_violin_by_contrast.pdf\n"))
-cat(strrep("=", 70), "\n\n")
+```{r Compartment intersection}
+data_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore"
+
+read_cscore <- function(filename, score_colname) {
+  read.table(file.path(data_dir, filename),
+             sep       = "\t",
+             col.names = c("chr", "start", "end", score_colname))
+}
+
+# Individual replicates
+REH        <- read_cscore("REH_tp.bedgraph_correct.bedgraph",           "score_REH")
+EP1_1      <- read_cscore("HiC-REH-EP1-1_tp.bedgraph_correct.bedgraph", "score_EP1_1")
+EP1_2      <- read_cscore("HiC-REH-EP1-2_tp.bedgraph_correct.bedgraph", "score_EP1_2")
+EP1_Aro_1  <- read_cscore("HiC-REH-EP1-Aro-1_tp.bedgraph_correct.bedgraph", "score_EP1_Aro_1")
+EP1_Aro_2  <- read_cscore("HiC-REH-EP1-Aro-2_tp.bedgraph_correct.bedgraph", "score_EP1_Aro_2")
+
+# Merged replicates
+EP1_merge     <- read_cscore("HiC-REH-EP1_tp.bedgraph_correct.bedgraph",     "score_EP1_merge")
+EP1_Aro_merge <- read_cscore("HiC-REH-EP1-Aro_tp.bedgraph_correct.bedgraph", "score_EP1_Aro_merge")
+
+cs_REH <- Reduce(
+  function(x, y) merge(x, y, by = c("chr", "start", "end")),
+  list(REH, EP1_1, EP1_2, EP1_Aro_1, EP1_Aro_2, EP1_merge, EP1_Aro_merge)
+)
+
+# ============================================================================
+# INTERSECTION: Dynamic compartments × RNA-seq DEGs
+# ============================================================================
+library(GenomicRanges)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+# ----------------------------------------------------------------------------
+# 1. Build GRanges from compartment bins (dynamic only)
+# ----------------------------------------------------------------------------
+dynamic_bins <- cs_REH_merge %>%
+  filter(!switching %in% c("A_A_A", "B_B_B"))
+
+bins_gr <- makeGRangesFromDataFrame(
+  dynamic_bins %>% select(chr, start, end, switching),
+  seqnames.field     = "chr",
+  keep.extra.columns = TRUE
+)
+
+# ----------------------------------------------------------------------------
+# 2. Load gene annotation (same BED used in script 1)
+# ----------------------------------------------------------------------------
+genes_bed <- read.table("R:/R_STIK/xavi_scripts/genes_gencode.v28.bed",
+                        sep = "\t", header = FALSE,
+                        col.names = c("chrom", "start", "end", "strand",
+                                      "gene_name", "ID", "description")) %>%
+  select(chrom, start, end, gene_name) %>%
+  mutate(start = as.integer(start), end = as.integer(end))
+
+genes_gr <- makeGRangesFromDataFrame(genes_bed,
+                                     seqnames.field     = "chrom",
+                                     keep.extra.columns = TRUE)
+
+# ----------------------------------------------------------------------------
+# 3. Overlap bins → genes
+# ----------------------------------------------------------------------------
+hits <- findOverlaps(bins_gr, genes_gr)
+
+bin_gene_map <- data.frame(
+  switching = bins_gr$switching[queryHits(hits)],
+  gene_name = genes_gr$gene_name[subjectHits(hits)]
+) %>% distinct()
+
+cat("Unique genes overlapping dynamic bins:", n_distinct(bin_gene_map$gene_name), "\n")
+
+# ----------------------------------------------------------------------------
+# 4. Pull RNA-seq results for all three contrasts
+# ----------------------------------------------------------------------------
+rnaseq_long <- bind_rows(
+  all_results[["EP1_vs_REH"]] %>%
+    select(gene, log2FoldChange, lfc_shrunk, padj, diffexpressed) %>%
+    mutate(contrast = "EP1_vs_REH"),
+  all_results[["Aro_vs_REH"]] %>%
+    select(gene, log2FoldChange, lfc_shrunk, padj, diffexpressed) %>%
+    mutate(contrast = "Aro_vs_REH"),
+  all_results[["EP1_vs_Aro"]] %>%
+    select(gene, log2FoldChange, lfc_shrunk, padj, diffexpressed) %>%
+    mutate(contrast = "EP1_vs_Aro")
+)
+
+# ----------------------------------------------------------------------------
+# 5. Join: bin_gene_map × RNA-seq results
+# ----------------------------------------------------------------------------
+comp_rnaseq <- bin_gene_map %>%
+  inner_join(rnaseq_long, by = c("gene_name" = "gene")) %>%
+  mutate(
+    switching_group = case_when(
+      switching == "B_A_A" ~ "A_gain_EP1_stable",
+      switching == "B_A_B" ~ "A_gain_EP1_transient",
+      switching == "B_B_A" ~ "A_gain_Aro",
+      switching == "A_B_B" ~ "B_gain_EP1_stable",
+      switching == "A_B_A" ~ "B_gain_EP1_transient",
+      switching == "A_A_B" ~ "B_gain_Aro"
+    )
+  )
+
+cat("Genes with both compartment + RNA-seq data:", n_distinct(comp_rnaseq$gene_name), "\n")
+
+# ----------------------------------------------------------------------------
+# 6. Concordance logic across all three contrasts
+#
+#   EP1_vs_REH  → informative for EP1-specific changes (B_A_A, B_A_B, A_B_B, A_B_A)
+#   Aro_vs_REH  → informative for Aro-specific changes (B_B_A, A_A_B)
+#   EP1_vs_Aro  → informative only where EP1 ≠ Aro compartment state:
+#                   B_A_B (EP1=A, Aro=B) → expect UP
+#                   A_B_A (EP1=B, Aro=A) → expect DOWN
+#                   B_B_A (Aro=A, EP1=B) → Aro more open → expect DOWN in EP1_vs_Aro
+#                   A_A_B (Aro=B, EP1=A) → Aro more closed → expect UP in EP1_vs_Aro
+#                   B_A_A (both EP1 and Aro = A) → NOT informative for EP1_vs_Aro
+#                   A_B_B (both EP1 and Aro = B) → NOT informative for EP1_vs_Aro
+# ----------------------------------------------------------------------------
+comp_rnaseq <- comp_rnaseq %>%
+  mutate(
+    concordant = case_when(
+
+      # -----------------------------------------------------------------------
+      # EP1_vs_REH
+      # -----------------------------------------------------------------------
+      switching_group %in% c("A_gain_EP1_stable", "A_gain_EP1_transient") &
+        contrast == "EP1_vs_REH" & diffexpressed == "UP"
+          ~ "Concordant (A gain + UP)",
+
+      switching_group %in% c("B_gain_EP1_stable", "B_gain_EP1_transient") &
+        contrast == "EP1_vs_REH" & diffexpressed == "DOWN"
+          ~ "Concordant (B gain + DOWN)",
+
+      switching_group %in% c("A_gain_EP1_stable", "A_gain_EP1_transient") &
+        contrast == "EP1_vs_REH" & diffexpressed == "DOWN"
+          ~ "Discordant (A gain + DOWN)",
+
+      switching_group %in% c("B_gain_EP1_stable", "B_gain_EP1_transient") &
+        contrast == "EP1_vs_REH" & diffexpressed == "UP"
+          ~ "Discordant (B gain + UP)",
+
+      # -----------------------------------------------------------------------
+      # Aro_vs_REH
+      # -----------------------------------------------------------------------
+      switching_group == "A_gain_Aro" &
+        contrast == "Aro_vs_REH" & diffexpressed == "UP"
+          ~ "Concordant (A gain + UP)",
+
+      switching_group == "B_gain_Aro" &
+        contrast == "Aro_vs_REH" & diffexpressed == "DOWN"
+          ~ "Concordant (B gain + DOWN)",
+
+      switching_group == "A_gain_Aro" &
+        contrast == "Aro_vs_REH" & diffexpressed == "DOWN"
+          ~ "Discordant (A gain + DOWN)",
+
+      switching_group == "B_gain_Aro" &
+        contrast == "Aro_vs_REH" & diffexpressed == "UP"
+          ~ "Discordant (B gain + UP)",
+
+      # -----------------------------------------------------------------------
+      # EP1_vs_Aro
+      # B_A_B: EP1=A, Aro=B → EP1 more open → expect UP in EP1_vs_Aro
+      # A_B_A: EP1=B, Aro=A → EP1 more closed → expect DOWN in EP1_vs_Aro
+      # B_B_A: Aro=A, EP1=B → Aro more open → expect DOWN in EP1_vs_Aro
+      # A_A_B: Aro=B, EP1=A → Aro more closed → expect UP in EP1_vs_Aro
+      # B_A_A / A_B_B: EP1 and Aro share same state → NOT informative (→ Not DEG)
+      # -----------------------------------------------------------------------
+      switching_group %in% c("A_gain_EP1_transient", "B_gain_Aro") &
+        contrast == "EP1_vs_Aro" & diffexpressed == "UP"
+          ~ "Concordant (A gain + UP)",
+
+      switching_group %in% c("A_gain_EP1_transient", "B_gain_Aro") &
+        contrast == "EP1_vs_Aro" & diffexpressed == "DOWN"
+          ~ "Discordant (A gain + DOWN)",
+
+      switching_group %in% c("B_gain_EP1_transient", "A_gain_Aro") &
+        contrast == "EP1_vs_Aro" & diffexpressed == "DOWN"
+          ~ "Concordant (B gain + DOWN)",
+
+      switching_group %in% c("B_gain_EP1_transient", "A_gain_Aro") &
+        contrast == "EP1_vs_Aro" & diffexpressed == "UP"
+          ~ "Discordant (B gain + UP)",
+
+      TRUE ~ "Not DEG"
+    )
+  )
+
+# Summary table
+concordance_summary <- comp_rnaseq %>%
+  dplyr::count(switching, switching_group, contrast, concordant) %>%
+  dplyr::arrange(switching_group, concordant)
+
+print(concordance_summary)
+
+# ----------------------------------------------------------------------------
+# 7. Plot 1 — LFC distribution per switching class, all three contrasts
+# ----------------------------------------------------------------------------
+switching_colors <- c(
+  "A_gain_EP1_stable"    = "#d95f02",
+  "A_gain_EP1_transient" = "#fdae61",
+  "A_gain_Aro"           = "#fee08b",
+  "B_gain_EP1_stable"    = "#542788",
+  "B_gain_EP1_transient" = "#8073ac",
+  "B_gain_Aro"           = "#b2abd2"
+)
+
+ggplot(comp_rnaseq,
+       aes(x = switching_group, y = lfc_shrunk, fill = switching_group)) +
+  geom_boxplot(outlier.size = 0.4, outlier.alpha = 0.4, alpha = 0.85) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray30") +
+  facet_wrap(~ contrast, nrow = 1) +
+  scale_fill_manual(values = switching_colors, na.value = "grey70") +
+  theme_bw() +
+  theme(axis.text.x  = element_text(angle = 45, hjust = 1, size = 10),
+        strip.text   = element_text(face = "bold"),
+        plot.title   = element_text(hjust = 0.5, face = "bold")) +
+  xlab("Compartment switching class") +
+  ylab("Shrunken Log2 Fold Change") +
+  labs(title = "RNA-seq LFC in dynamic compartment bins",
+       fill  = "Switching group")
+
+# ----------------------------------------------------------------------------
+# 8. Plot 2 — Concordance bar plot, all three contrasts
+# ----------------------------------------------------------------------------
+concordance_colors <- c(
+  "Concordant (A gain + UP)"   = "#f0a500",
+  "Concordant (B gain + DOWN)" = "#6c3483",
+  "Discordant (A gain + DOWN)" = "#f9d08b",
+  "Discordant (B gain + UP)"   = "#c39bd3"
+)
+
+concordance_plot_df <- comp_rnaseq %>%
+  dplyr::filter(concordant != "Not DEG") %>%
+  dplyr::count(contrast, concordant) %>%
+  mutate(contrast = factor(contrast,
+                           levels = c("EP1_vs_REH", "Aro_vs_REH", "EP1_vs_Aro")))
+
+ggplot(concordance_plot_df,
+       aes(x = contrast, y = n, fill = concordant)) +
+  geom_bar(stat = "identity", position = "dodge",
+           color = "black", linewidth = 0.35) +
+  scale_fill_manual(values = concordance_colors) +
+  theme_bw() +
+  theme(plot.title  = element_text(hjust = 0.5, face = "bold"),
+        axis.text.x = element_text(angle = 30, hjust = 1)) +
+  xlab("") + ylab("Number of genes") +
+  labs(title = "Compartment–transcription concordance (all contrasts)",
+       fill  = "Category")
+
+# ----------------------------------------------------------------------------
+# 9. Volcano plot — colored by compartment switching, all three contrasts
+# ----------------------------------------------------------------------------
+volcano_df <- comp_rnaseq %>%
+  mutate(
+    neglog10_padj = -log10(padj),
+    contrast = factor(contrast,
+                      levels = c("EP1_vs_REH", "Aro_vs_REH", "EP1_vs_Aro"))
+  )
+
+ggplot(volcano_df,
+       aes(x = lfc_shrunk,
+           y = neglog10_padj,
+           color = switching_group)) +
+  geom_point(alpha = 0.5, size = 1.3) +
+  facet_wrap(~ contrast, nrow = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray40") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "gray40") +
+  scale_color_manual(values = switching_colors, na.value = "grey70") +
+  theme_bw() +
+  theme(plot.title  = element_text(hjust = 0.5, face = "bold"),
+        strip.text  = element_text(face = "bold")) +
+  labs(title  = "Volcano plot of RNA-seq genes in dynamic compartments",
+       x      = "Shrunken log2 Fold Change",
+       y      = "-log10 adjusted p-value",
+       color  = "Switching group")
+
 ```
