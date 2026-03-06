@@ -1902,7 +1902,6 @@ cs_REH_merge <- read.table(data,
                             header    = TRUE,
                             stringsAsFactors = FALSE)
 
-# Restore factor levels for switching
 switching_levels <- c(
   "A_A_A", "B_B_B",
   "B_A_A", "B_B_A",
@@ -1933,7 +1932,7 @@ bins_gr <- makeGRangesFromDataFrame(
 )
 
 # ----------------------------------------------------------------------------
-# 2. Load gene annotation (same BED used in script 1)
+# 2. Load gene annotation
 # ----------------------------------------------------------------------------
 genes_bed <- read.table("R:/R_STIK/xavi_scripts/genes_gencode.v28.bed",
                         sep = "\t", header = FALSE,
@@ -1975,100 +1974,64 @@ rnaseq_long <- bind_rows(
 
 # ----------------------------------------------------------------------------
 # 5. Join: bin_gene_map × RNA-seq results
+#    switching stays as 3-letter code throughout
 # ----------------------------------------------------------------------------
 comp_rnaseq <- bin_gene_map %>%
-  inner_join(rnaseq_long, by = c("gene_name" = "gene")) %>%
-  mutate(
-    switching_group = case_when(
-      switching == "B_A_A" ~ "A_gain_EP1_stable",
-      switching == "B_A_B" ~ "A_gain_EP1_transient",
-      switching == "B_B_A" ~ "A_gain_Aro",
-      switching == "A_B_B" ~ "B_gain_EP1_stable",
-      switching == "A_B_A" ~ "B_gain_EP1_transient",
-      switching == "A_A_B" ~ "B_gain_Aro"
-    )
-  )
+  inner_join(rnaseq_long, by = c("gene_name" = "gene"))
 
 cat("Genes with both compartment + RNA-seq data:", n_distinct(comp_rnaseq$gene_name), "\n")
 
 # ----------------------------------------------------------------------------
-# 6. Concordance logic across all three contrasts
+# 6. Concordance logic using 3-letter codes directly
 #
-#   EP1_vs_REH  → informative for EP1-specific changes (B_A_A, B_A_B, A_B_B, A_B_A)
-#   Aro_vs_REH  → informative for Aro-specific changes (B_B_A, A_A_B)
-#   EP1_vs_Aro  → informative only where EP1 ≠ Aro compartment state:
-#                   B_A_B (EP1=A, Aro=B) → expect UP
-#                   A_B_A (EP1=B, Aro=A) → expect DOWN
-#                   B_B_A (Aro=A, EP1=B) → Aro more open → expect DOWN in EP1_vs_Aro
-#                   A_A_B (Aro=B, EP1=A) → Aro more closed → expect UP in EP1_vs_Aro
-#                   B_A_A (both EP1 and Aro = A) → NOT informative for EP1_vs_Aro
-#                   A_B_B (both EP1 and Aro = B) → NOT informative for EP1_vs_Aro
+#   REH | EP1 | Aro  (order of letters in the code)
+#
+#   A gains (B→A): B_A_A, B_A_B, B_B_A
+#   B gains (A→B): A_B_B, A_B_A, A_A_B
+#
+#   EP1_vs_REH: REH→EP1 switch  → B_A_A, B_A_B (A gain), A_B_B, A_B_A (B gain)
+#   Aro_vs_REH: REH→Aro switch  → B_B_A (A gain), A_A_B (B gain)
+#   EP1_vs_Aro: EP1→Aro switch  → B_A_B (EP1=A, Aro=B → UP), A_B_A (EP1=B, Aro=A → DOWN)
+#                                  B_B_A (Aro=A, EP1=B → DOWN), A_A_B (Aro=B, EP1=A → UP)
+#                                  B_A_A / A_B_B → EP1=Aro → NOT informative
 # ----------------------------------------------------------------------------
 comp_rnaseq <- comp_rnaseq %>%
   mutate(
     concordant = case_when(
 
-      # -----------------------------------------------------------------------
-      # EP1_vs_REH
-      # -----------------------------------------------------------------------
-      switching_group %in% c("A_gain_EP1_stable", "A_gain_EP1_transient") &
-        contrast == "EP1_vs_REH" & diffexpressed == "UP"
-          ~ "Concordant (A gain + UP)",
+      # --- EP1_vs_REH ---
+      switching %in% c("B_A_A", "B_A_B") &
+        contrast == "EP1_vs_REH" & diffexpressed == "UP"   ~ "Concordant (A gain + UP)",
+      switching %in% c("B_A_A", "B_A_B") &
+        contrast == "EP1_vs_REH" & diffexpressed == "DOWN" ~ "Discordant (A gain + DOWN)",
+      switching %in% c("A_B_B", "A_B_A") &
+        contrast == "EP1_vs_REH" & diffexpressed == "DOWN" ~ "Concordant (B gain + DOWN)",
+      switching %in% c("A_B_B", "A_B_A") &
+        contrast == "EP1_vs_REH" & diffexpressed == "UP"   ~ "Discordant (B gain + UP)",
 
-      switching_group %in% c("B_gain_EP1_stable", "B_gain_EP1_transient") &
-        contrast == "EP1_vs_REH" & diffexpressed == "DOWN"
-          ~ "Concordant (B gain + DOWN)",
+      # --- Aro_vs_REH ---
+      switching == "B_B_A" &
+        contrast == "Aro_vs_REH" & diffexpressed == "UP"   ~ "Concordant (A gain + UP)",
+      switching == "B_B_A" &
+        contrast == "Aro_vs_REH" & diffexpressed == "DOWN" ~ "Discordant (A gain + DOWN)",
+      switching == "A_A_B" &
+        contrast == "Aro_vs_REH" & diffexpressed == "DOWN" ~ "Concordant (B gain + DOWN)",
+      switching == "A_A_B" &
+        contrast == "Aro_vs_REH" & diffexpressed == "UP"   ~ "Discordant (B gain + UP)",
 
-      switching_group %in% c("A_gain_EP1_stable", "A_gain_EP1_transient") &
-        contrast == "EP1_vs_REH" & diffexpressed == "DOWN"
-          ~ "Discordant (A gain + DOWN)",
-
-      switching_group %in% c("B_gain_EP1_stable", "B_gain_EP1_transient") &
-        contrast == "EP1_vs_REH" & diffexpressed == "UP"
-          ~ "Discordant (B gain + UP)",
-
-      # -----------------------------------------------------------------------
-      # Aro_vs_REH
-      # -----------------------------------------------------------------------
-      switching_group == "A_gain_Aro" &
-        contrast == "Aro_vs_REH" & diffexpressed == "UP"
-          ~ "Concordant (A gain + UP)",
-
-      switching_group == "B_gain_Aro" &
-        contrast == "Aro_vs_REH" & diffexpressed == "DOWN"
-          ~ "Concordant (B gain + DOWN)",
-
-      switching_group == "A_gain_Aro" &
-        contrast == "Aro_vs_REH" & diffexpressed == "DOWN"
-          ~ "Discordant (A gain + DOWN)",
-
-      switching_group == "B_gain_Aro" &
-        contrast == "Aro_vs_REH" & diffexpressed == "UP"
-          ~ "Discordant (B gain + UP)",
-
-      # -----------------------------------------------------------------------
-      # EP1_vs_Aro
-      # B_A_B: EP1=A, Aro=B → EP1 more open → expect UP in EP1_vs_Aro
-      # A_B_A: EP1=B, Aro=A → EP1 more closed → expect DOWN in EP1_vs_Aro
-      # B_B_A: Aro=A, EP1=B → Aro more open → expect DOWN in EP1_vs_Aro
-      # A_A_B: Aro=B, EP1=A → Aro more closed → expect UP in EP1_vs_Aro
-      # B_A_A / A_B_B: EP1 and Aro share same state → NOT informative (→ Not DEG)
-      # -----------------------------------------------------------------------
-      switching_group %in% c("A_gain_EP1_transient", "B_gain_Aro") &
-        contrast == "EP1_vs_Aro" & diffexpressed == "UP"
-          ~ "Concordant (A gain + UP)",
-
-      switching_group %in% c("A_gain_EP1_transient", "B_gain_Aro") &
-        contrast == "EP1_vs_Aro" & diffexpressed == "DOWN"
-          ~ "Discordant (A gain + DOWN)",
-
-      switching_group %in% c("B_gain_EP1_transient", "A_gain_Aro") &
-        contrast == "EP1_vs_Aro" & diffexpressed == "DOWN"
-          ~ "Concordant (B gain + DOWN)",
-
-      switching_group %in% c("B_gain_EP1_transient", "A_gain_Aro") &
-        contrast == "EP1_vs_Aro" & diffexpressed == "UP"
-          ~ "Discordant (B gain + UP)",
+      # --- EP1_vs_Aro ---
+      # B_A_B: EP1=A, Aro=B → EP1 more open → expect UP
+      # A_A_B: EP1=A, Aro=B → same → expect UP
+      switching %in% c("B_A_B", "A_A_B") &
+        contrast == "EP1_vs_Aro" & diffexpressed == "UP"   ~ "Concordant (A gain + UP)",
+      switching %in% c("B_A_B", "A_A_B") &
+        contrast == "EP1_vs_Aro" & diffexpressed == "DOWN" ~ "Discordant (A gain + DOWN)",
+      # A_B_A: EP1=B, Aro=A → EP1 more closed → expect DOWN
+      # B_B_A: EP1=B, Aro=A → same → expect DOWN
+      switching %in% c("A_B_A", "B_B_A") &
+        contrast == "EP1_vs_Aro" & diffexpressed == "DOWN" ~ "Concordant (B gain + DOWN)",
+      switching %in% c("A_B_A", "B_B_A") &
+        contrast == "EP1_vs_Aro" & diffexpressed == "UP"   ~ "Discordant (B gain + UP)",
 
       TRUE ~ "Not DEG"
     )
@@ -2076,27 +2039,30 @@ comp_rnaseq <- comp_rnaseq %>%
 
 # Summary table
 concordance_summary <- comp_rnaseq %>%
-  dplyr::count(switching, switching_group, contrast, concordant) %>%
-  dplyr::arrange(switching_group, concordant)
+  dplyr::count(switching, contrast, concordant) %>%
+  dplyr::arrange(switching, concordant)
 
 print(concordance_summary)
 write.table(concordance_summary,
             file.path(comp_dir, "concordance_summary.tsv"),
             sep = "\t", row.names = FALSE, quote = FALSE)
+
 # ----------------------------------------------------------------------------
-# 7. Plot 1 — LFC distribution per switching class, all three contrasts
+# 7. Plot 1 — LFC distribution per switching class (3-letter codes), all contrasts
 # ----------------------------------------------------------------------------
+
+# Color palette for the 6 dynamic classes
 switching_colors <- c(
-  "A_gain_EP1_stable"    = "#d95f02",
-  "A_gain_EP1_transient" = "#fdae61",
-  "A_gain_Aro"           = "#fee08b",
-  "B_gain_EP1_stable"    = "#542788",
-  "B_gain_EP1_transient" = "#8073ac",
-  "B_gain_Aro"           = "#b2abd2"
+  "B_A_A" = "#d95f02",
+  "B_A_B" = "#fdae61",
+  "B_B_A" = "#fee08b",
+  "A_B_B" = "#542788",
+  "A_B_A" = "#8073ac",
+  "A_A_B" = "#b2abd2"
 )
 
-lfc_plot<-ggplot(comp_rnaseq,
-       aes(x = switching_group, y = lfc_shrunk, fill = switching_group)) +
+lfc_plot <- ggplot(comp_rnaseq,
+       aes(x = switching, y = lfc_shrunk, fill = switching)) +
   geom_boxplot(outlier.size = 0.4, outlier.alpha = 0.4, alpha = 0.85) +
   geom_hline(yintercept = 0, linetype = "dashed", color = "gray30") +
   facet_wrap(~ contrast, nrow = 1) +
@@ -2105,16 +2071,16 @@ lfc_plot<-ggplot(comp_rnaseq,
   theme(axis.text.x  = element_text(angle = 45, hjust = 1, size = 10),
         strip.text   = element_text(face = "bold"),
         plot.title   = element_text(hjust = 0.5, face = "bold")) +
-  xlab("Compartment switching class") +
+  xlab("Compartment switching class (REH | EP1 | Aro)") +
   ylab("Shrunken Log2 Fold Change") +
   labs(title = "RNA-seq LFC in dynamic compartment bins",
-       fill  = "Switching group")
+       fill  = "Switching class")
 print(lfc_plot)
 ggsave(file.path(comp_dir, "LFC_distribution_switching_classes.pdf"),
        plot = lfc_plot, width = 12, height = 6)
 
 # ----------------------------------------------------------------------------
-# 8. Plot 2 — Concordance bar plot, all three contrasts
+# 8. Plot 2 — Concordance bar plot (3-letter codes on x-axis)
 # ----------------------------------------------------------------------------
 concordance_colors <- c(
   "Concordant (A gain + UP)"   = "#f0a500",
@@ -2125,31 +2091,32 @@ concordance_colors <- c(
 
 concordance_plot_df <- comp_rnaseq %>%
   dplyr::filter(concordant != "Not DEG") %>%
-  dplyr::count(contrast, concordant) %>%
+  dplyr::count(switching, contrast, concordant) %>%
   mutate(contrast = factor(contrast,
                            levels = c("EP1_vs_REH", "Aro_vs_REH", "EP1_vs_Aro")))
 
-concordance_plot<-ggplot(concordance_plot_df,
-       aes(x = contrast, y = n, fill = concordant)) +
+concordance_plot <- ggplot(concordance_plot_df,
+       aes(x = switching, y = n, fill = concordant)) +
   geom_bar(stat = "identity", position = "dodge",
            color = "black", linewidth = 0.35) +
   scale_fill_manual(values = concordance_colors) +
+  facet_wrap(~ contrast, nrow = 1, scales = "free_x") +
   theme_bw() +
   theme(plot.title  = element_text(hjust = 0.5, face = "bold"),
         axis.text.x = element_text(angle = 30, hjust = 1)) +
-  xlab("") + ylab("Number of genes") +
+  xlab("Switching class (REH | EP1 | Aro)") +
+  ylab("Number of genes") +
   labs(title = "Compartment–transcription concordance (all contrasts)",
        fill  = "Category")
 print(concordance_plot)
 ggsave(file.path(comp_dir, "Transcription_concordance_switching_classes.pdf"),
-       plot = concordance_plot, width = 12, height = 6)
+       plot = concordance_plot, width = 14, height = 6)
 
 # ----------------------------------------------------------------------------
-# 9. Volcano plot — colored by compartment switching, all three contrasts
+# 9. Volcano plot — colored by switching class (3-letter codes)
 # ----------------------------------------------------------------------------
 library(ggrepel)
 
-# Define significance + LFC thresholds
 lfc_thresh  <- 1
 padj_thresh <- 0.05
 
@@ -2158,73 +2125,35 @@ volcano_df <- comp_rnaseq %>%
     neglog10_padj = -log10(padj),
     contrast = factor(contrast, levels = c("EP1_vs_REH", "Aro_vs_REH", "EP1_vs_Aro")),
     point_class = case_when(
-      padj < padj_thresh & abs(lfc_shrunk) > lfc_thresh ~ switching_group,
+      padj < padj_thresh & abs(lfc_shrunk) > lfc_thresh ~ as.character(switching),
       TRUE                                               ~ "Not significant"
     )
   )
 
-# Top hits labeled by highest significance
 top_hits <- volcano_df %>%
   filter(padj < padj_thresh, abs(lfc_shrunk) > lfc_thresh) %>%
   group_by(contrast) %>%
   slice_max(order_by = neglog10_padj, n = 10) %>%
   ungroup()
 
-# Colors: original switching palette + grey for non-significant
-point_colors <- c(
-  "A_gain_EP1_stable"    = "#f6a623",
-  "A_gain_EP1_transient" = "#fdae6b",
-  "A_gain_Aro"           = "#fee08b",
-  "B_gain_EP1_stable"    = "#7e57c2",
-  "B_gain_EP1_transient" = "#9575cd",
-  "B_gain_Aro"           = "#b39ddb",
-  "Not significant"      = "grey75"
-)
+point_colors <- c(switching_colors, "Not significant" = "grey75")
+point_sizes  <- c(setNames(rep(2, 6), names(switching_colors)), "Not significant" = 1)
+point_alpha  <- c(setNames(rep(0.9, 6), names(switching_colors)), "Not significant" = 0.4)
 
-point_sizes <- c(
-  "A_gain_EP1_stable"    = 2,
-  "A_gain_EP1_transient" = 2,
-  "A_gain_Aro"           = 2,
-  "B_gain_EP1_stable"    = 2,
-  "B_gain_EP1_transient" = 2,
-  "B_gain_Aro"           = 2,
-  "Not significant"      = 1
-)
-
-point_alpha <- c(
-  "A_gain_EP1_stable"    = 0.9,
-  "A_gain_EP1_transient" = 0.9,
-  "A_gain_Aro"           = 0.9,
-  "B_gain_EP1_stable"    = 0.9,
-  "B_gain_EP1_transient" = 0.9,
-  "B_gain_Aro"           = 0.9,
-  "Not significant"      = 0.4
-)
-
-volcano_comp_plot<-ggplot(volcano_df,
-       aes(x = lfc_shrunk, y = neglog10_padj, color = point_class,
-           size = point_class, alpha = point_class)) +
+volcano_comp_plot <- ggplot(volcano_df,
+       aes(x = lfc_shrunk, y = neglog10_padj,
+           color = point_class, size = point_class, alpha = point_class)) +
   geom_point() +
-  # Threshold lines
   geom_vline(xintercept = c(-lfc_thresh, lfc_thresh),
              linetype = "dashed", color = "black", linewidth = 0.4) +
   geom_hline(yintercept = -log10(padj_thresh),
              linetype = "dashed", color = "black", linewidth = 0.4) +
-  # Labels for top hits
   geom_text_repel(
     data          = top_hits,
-    aes(x         = lfc_shrunk,
-        y         = neglog10_padj,
-        label     = gene_name),
-    size          = 3,
-    fontface      = "plain",
-    color         = "gray20",
-    max.overlaps  = 20,
-    box.padding   = 0.4,
-    segment.color = "gray50",
-    segment.size  = 0.3,
-    min.segment.length = 0.2,
-    inherit.aes   = FALSE
+    aes(x = lfc_shrunk, y = neglog10_padj, label = gene_name),
+    size          = 3, color = "gray20", max.overlaps = 20,
+    box.padding   = 0.4, segment.color = "gray50", segment.size = 0.3,
+    min.segment.length = 0.2, inherit.aes = FALSE
   ) +
   facet_wrap(~ contrast, nrow = 1) +
   scale_color_manual(values = point_colors) +
@@ -2238,61 +2167,23 @@ volcano_comp_plot<-ggplot(volcano_df,
     strip.text       = element_text(face = "bold", size = 11),
     strip.background = element_rect(fill = "grey95", color = "black"),
     legend.title     = element_text(face = "bold", size = 10),
-    legend.text      = element_text(size = 9),
     axis.title       = element_text(size = 11)
   ) +
-  guides(size  = "none", alpha = "none") +
+  guides(size = "none", alpha = "none") +
   labs(
-    title = "Volcano plot of RNA-seq genes in dynamic compartments",
+    title = "Volcano plot — genes in dynamic compartments",
     x     = "Shrunken log2 Fold Change",
     y     = "-log10 adjusted p-value",
-    color = "Category"
+    color = "Switching class\n(REH|EP1|Aro)"
   )
 print(volcano_comp_plot)
 ggsave(file.path(comp_dir, "Volcano_switching_classes.pdf"),
        plot = volcano_comp_plot, width = 12, height = 6)
 ```
-
 ```{r Compartment enrichment}
 # ----------------------------------------------------------------------------
-# Enrichment analysis of genes in dynamic compartments
+# Enrichment: switching class × contrast × direction (UP / DOWN)
 # ----------------------------------------------------------------------------
-
-# Define the 6 dynamic switching classes
-switching_dynamic_levels <- c("B_A_A", "B_B_A", "A_B_B", "A_A_B", "A_B_A", "B_A_B")
-
-switching_labels_comp <- c(
-  "B_A_A" = "A_gain_EP1_stable",
-  "B_B_A" = "A_gain_Aro",
-  "A_B_B" = "B_gain_EP1_stable",
-  "A_A_B" = "B_gain_Aro",
-  "A_B_A" = "B_gain_EP1_transient",
-  "B_A_B" = "A_gain_EP1_transient"
-)
-
-# Filter to DEGs passing thresholds, keep all three contrasts
-deg_filtered <- comp_rnaseq %>%
-  filter(
-    padj < 0.05,
-    abs(log2FoldChange) > 1
-  ) %>%
-  distinct(gene_name, switching_group, contrast)
-
-# Summary
-cat("DEGs per switching class and contrast after threshold filtering:\n")
-print(table(deg_filtered$switching_group, deg_filtered$contrast))
-
-# Build gene lists: one per switching_group × contrast combination
-comp_gene_lists <- deg_filtered %>%
-  group_by(switching_group, contrast) %>%
-  summarise(genes = list(unique(gene_name)), .groups = "drop")
-
-cat("\nGene list sizes:\n")
-print(data.frame(
-  switching_group = comp_gene_lists$switching_group,
-  contrast        = comp_gene_lists$contrast,
-  n_genes         = sapply(comp_gene_lists$genes, length)
-))
 
 dbs <- c("GO_Biological_Process_2023",
          "KEGG_2021_Human",
@@ -2300,16 +2191,45 @@ dbs <- c("GO_Biological_Process_2023",
          "Reactome_2022",
          "MSigDB_Hallmark_2020")
 
+# Filter DEGs passing thresholds — keep direction (diffexpressed)
+deg_filtered <- comp_rnaseq %>%
+  filter(
+    padj < 0.05,
+    abs(log2FoldChange) > 1,
+    diffexpressed %in% c("UP", "DOWN")
+  ) %>%
+  distinct(gene_name, switching, contrast, diffexpressed)
+
+cat("DEGs per switching class, contrast, and direction:\n")
+print(table(deg_filtered$switching, deg_filtered$contrast, deg_filtered$diffexpressed))
+
+# Build gene lists: one per switching × contrast × direction
+comp_gene_lists <- deg_filtered %>%
+  group_by(switching, contrast, diffexpressed) %>%
+  summarise(genes = list(unique(gene_name)), .groups = "drop")
+
+cat("\nGene list sizes:\n")
+print(data.frame(
+  switching    = comp_gene_lists$switching,
+  contrast     = comp_gene_lists$contrast,
+  direction    = comp_gene_lists$diffexpressed,
+  n_genes      = sapply(comp_gene_lists$genes, length)
+))
+
 comp_enrichr_results <- list()
 
 for (i in seq_len(nrow(comp_gene_lists))) {
 
-  sw_class  <- comp_gene_lists$switching_group[i]
+  sw_class  <- as.character(comp_gene_lists$switching[i])
   contrast  <- comp_gene_lists$contrast[i]
+  direction <- comp_gene_lists$diffexpressed[i]
   gene_vec  <- comp_gene_lists$genes[[i]]
-  list_key  <- paste0(sw_class, "_", contrast)
+  list_key  <- paste0(sw_class, "_", contrast, "_", direction)
 
-  cat("\n=== Switching:", sw_class, "| Contrast:", contrast, "| Genes:", length(gene_vec), "===\n")
+  cat("\n=== Switching:", sw_class,
+      "| Contrast:", contrast,
+      "| Direction:", direction,
+      "| Genes:", length(gene_vec), "===\n")
 
   if (length(gene_vec) < 5 || !websiteLive) {
     cat("  Skipping – too few genes or enrichR offline\n")
@@ -2332,30 +2252,32 @@ for (i in seq_len(nrow(comp_gene_lists))) {
       next
     }
 
-    # Save TSV — filename encodes both switching class and contrast
+    # Save TSV
     save_enrichr_genelists(
       sig_terms,
-      prefix  = paste0(sw_class, "_", contrast, "_", db_name),
+      prefix  = paste0(sw_class, "_", contrast, "_", direction, "_", db_name),
       out_dir = comp_enrichr_dir
     )
 
-    # Plot — title shows switching class + contrast
+    # Plot
     p <- plot_enrichr(
       sig_terms,
-      title_str = paste0(db_name, "\n", sw_class, " | ", contrast),
+      title_str = paste0(db_name, "\n", sw_class,
+                         " | ", contrast, " | ", direction),
       xlab_str  = paste0(db_name, " Terms")
     )
     print(p)
 
     ggsave(
       filename = file.path(comp_enrichr_dir,
-                           paste0("enrichR_", db_name, "_", sw_class, "_", contrast, ".pdf")),
+                           paste0("enrichR_", db_name, "_",
+                                  sw_class, "_", contrast, "_", direction, ".pdf")),
       plot   = p,
       width  = 10,
       height = 7
     )
 
-    cat("  Saved:", db_name, "\n")
+    cat("  Saved:", db_name, direction, "\n")
   }
 }
 
