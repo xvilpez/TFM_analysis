@@ -47,7 +47,7 @@ Cscore bedgraph files for three conditions:
 
 ---
 
-# 1. Libraries
+# 1. Libraries and output directories
 
 ```{r libraries}
 library(dplyr)
@@ -59,6 +59,15 @@ library(viridis)
 library(tidyr)
 library(grid)
 library(cowplot)
+
+output_dir<-"Comp_Analysis"
+
+files_dir  <- file.path(output_dir, "files")
+plots_dir  <- file.path(output_dir, "plots")
+
+for (d in c(files_dir, plots_dir)) {
+  if (!dir.exists(d)) dir.create(d, recursive = TRUE)
+}
 ```
 
 ---
@@ -151,7 +160,7 @@ type_shapes <- c("original"  = 21,
                  "replicate" = 22,
                  "merge"     = 24)
 
-ggplot(pca_df, aes(x = PC1, y = PC2,
+pca_before<-ggplot(pca_df, aes(x = PC1, y = PC2,
                    fill  = condition,
                    shape = type,
                    label = sample)) +
@@ -177,8 +186,9 @@ ggplot(pca_df, aes(x = PC1, y = PC2,
     fill  = guide_legend(title = "Condition", override.aes = list(shape = 21)),
     shape = guide_legend(title = "Type")
   )
+print(pca_before)
+ggsave(file.path(plots_dir, "pca_before_correction.pdf"), pca_before, width = 10, height = 6)
 ```
-
 Now we remove some problematic regions that we detected through IGV visualization of the bedgraphs
 
 ```{r Problematic regions removal + PCA after correction}
@@ -239,14 +249,14 @@ for(name in names(samples)){
 
   outfile <- paste0(name, "_manual_corrected.bedgraph")
   
-  # write.table(
-  #   df_corr,
-  #   outfile,
-  #   sep = "\t",
-  #   quote = FALSE,
-  #   row.names = FALSE,
-  #   col.names = FALSE
-  # )
+  write.table(
+    df_corr,
+    outfile,
+    sep = "\t",
+    quote = FALSE,
+    row.names = FALSE,
+    col.names = FALSE
+  )
 
   cat("Saved:", outfile, "\n")
 }
@@ -292,7 +302,7 @@ pca_df_corr$condition  <- c("REH", "EP1", "EP1", "EP1_Aro", "EP1_Aro", "EP1", "E
 pca_df_corr$type       <- c("original", "replicate", "replicate",
                              "replicate", "replicate", "merge", "merge")
 
-ggplot(pca_df_corr, aes(x = PC1, y = PC2,
+pca_after<-ggplot(pca_df_corr, aes(x = PC1, y = PC2,
                         fill  = condition,
                         shape = type,
                         label = sample)) +
@@ -318,6 +328,8 @@ ggplot(pca_df_corr, aes(x = PC1, y = PC2,
     fill  = guide_legend(title = "Condition", override.aes = list(shape = 21)),
     shape = guide_legend(title = "Type")
   )
+print(pca_after)
+ggsave(file.path(plots_dir, "pca_after_correction.pdf"), pca_after, width = 10, height = 6)
 ```
 
 ## 3.2 Spearman correlation matrix
@@ -328,7 +340,7 @@ replicates of the same condition indicate good reproducibility.
 ```{r correlation}
 cor_mat <- cor(cscore_matrix, method = "spearman")
 
-ggplot(melt(cor_mat), aes(x = Var1, y = Var2, fill = value)) +
+spear_p<-ggplot(melt(cor_mat), aes(x = Var1, y = Var2, fill = value)) +
   geom_tile() +
   geom_text(aes(label = round(value, 2)), size = 3.2) +
   coord_equal() +
@@ -339,6 +351,8 @@ ggplot(melt(cor_mat), aes(x = Var1, y = Var2, fill = value)) +
     plot.title   = element_text(hjust = 0.5, face = "bold")
   ) +
   labs(title = "Spearman Correlation – Cscore (all samples)", x = "", y = "")
+print(spear_p)
+ggsave(file.path(plots_dir, "spearman_corr.pdf"), spear_p, width = 10, height = 6)
 ```
 ##3.3.Barplots
 
@@ -374,7 +388,7 @@ sample_comp <- bind_rows(
                                              "EP1_1", "EP1_2", "EP1_merge",
                                              "EP1_Aro_1", "EP1_Aro_2", "EP1_Aro_merge")))
 
-ggplot(sample_comp, aes(x = Sample, y = Total, fill = Condition)) +
+bins_QC<-ggplot(sample_comp, aes(x = Sample, y = Total, fill = Condition)) +
   geom_bar(stat      = "identity",
            color     = "black",
            linewidth = 0.35,
@@ -399,6 +413,8 @@ ggplot(sample_comp, aes(x = Sample, y = Total, fill = Condition)) +
   ) +
   xlab("") + ylab("Number of bins") +
   labs(title = "Total bins per sample (QC)")
+print(bins_QC)
+ggsave(file.path(plots_dir, "bins_x_sample_QC.pdf"), bins_QC, width = 10, height = 6)
 ```
 ---
 
@@ -446,6 +462,9 @@ summary_comp <- data.frame(
   )
 
 knitr::kable(summary_comp, caption = "A/B compartment counts per condition (merged samples)")
+write.table(summary_comp,
+            file.path(files_dir, "summary_comp.tsv"),
+            sep = "\t", row.names = FALSE, quote = FALSE)
 ```
 
 ## 4.1 A/B barplot
@@ -458,7 +477,7 @@ dt_merge <- rbind(
 )
 rownames(dt_merge) <- c("REH", "EP1", "EP1_Aro")
 
-ggplot(melt(dt_merge), aes(fill = Var1, x = Var2, y = value)) +
+AB_barp<-ggplot(melt(dt_merge), aes(fill = Var1, x = Var2, y = value)) +
   geom_bar(position = "dodge", stat = "identity",
            width = 0.7, color = "black") +
   scale_fill_manual(values = c("REH" = "#e74c3c",
@@ -474,6 +493,8 @@ ggplot(melt(dt_merge), aes(fill = Var1, x = Var2, y = value)) +
   ) +
   xlab("") + ylab("Number of bins") +
   labs(title = "A/B compartments – merged samples")
+print(AB_barp)
+ggsave(file.path(plots_dir, "AB_counts.pdf"), AB_barp, width = 10, height = 6)
 ```
 
 ```{r Proportion barplot}
@@ -506,7 +527,7 @@ prop_df <- data.frame(
                                              "EP1_merge","EP1_Aro_1",
                                              "EP1_Aro_2","EP1_Aro_merge")))
 
-ggplot(prop_df, aes(x = Sample, y = Proportion, fill = Compartment)) +
+prop_bar<-ggplot(prop_df, aes(x = Sample, y = Proportion, fill = Compartment)) +
   geom_bar(stat = "identity", color = "black", linewidth = 0.4) +
   geom_text(aes(label = paste0(round(Proportion, 1), "%")),
             position = position_stack(vjust = 0.5),
@@ -524,6 +545,8 @@ ggplot(prop_df, aes(x = Sample, y = Proportion, fill = Compartment)) +
   ) +
   xlab("") + ylab("Proportion (%)") +
   labs(title = "A/B compartment proportions per sample")
+print(prop_bar)
+ggsave(file.path(plots_dir, "AB_proportions.pdf"), prop_bar, width = 10, height = 6)
 ```
 
 ---
@@ -570,16 +593,15 @@ switching_labels <- c(
   "B_A_B" = "A gain (EP1, specific)"
 )
 
-# Colour palette: warm = A-dominant, cool = B-dominant, grey = constitutive B
 switching_colors <- c(
-  "A_A_A" = "#d5e8d4",   # pale green  – constitutive A
-  "B_B_B" = "#dae8fc",   # pale blue   – constitutive B
-  "B_A_A" = "#f0a500",   # amber       – A gain, maintained
-  "B_B_A" = "#f9d08b",   # light amber – A gain Aro
-  "A_B_B" = "#6c3483",   # purple      – B gain, maintained
-  "A_A_B" = "#c39bd3",   # light purple– B gain Aro
-  "A_B_A" = "#e74c3c",   # red         – B gain EP1
-  "B_A_B" = "#2ecc71"    # green       – A gain EP1
+  "A_A_A" = "#c8e6c9",   # soft sage green     – constitutive A
+  "B_B_B" = "#bbdefb",   # soft sky blue        – constitutive B
+  "B_A_A" = "#f6a623",   # muted amber          – A gain, maintained
+  "B_B_A" = "#fdd28a",   # pale gold            – A gain Aro
+  "A_B_B" = "#7e57c2",   # muted violet         – B gain, maintained
+  "A_A_B" = "#b39ddb",   # soft lavender        – B gain Aro
+  "A_B_A" = "#ef6c5a",   # soft coral-red       – B gain EP1
+  "B_A_B" = "#4caf82"    # muted mint-green     – A gain EP1
 )
 
 cs_REH_merge$switching <- factor(cs_REH_merge$dyn_all,
@@ -600,6 +622,9 @@ switch_counts <- as.data.frame(table(switching = cs_REH_merge$switching)) %>%
 knitr::kable(switch_counts[, c("switching", "Label", "Freq", "Pct", "Group")],
              col.names = c("switching", "Description", "Bins", "% total", "Group"),
              caption   = "Bin counts per switching across REH → EP1 → EP1_Aro")
+write.table(switch_counts,
+            file.path(files_dir, "switch_counts.tsv"),
+            sep = "\t", row.names = FALSE, quote = FALSE)
 ```
 
 ## 5.2 Bar plot of switching counts
@@ -608,7 +633,7 @@ knitr::kable(switch_counts[, c("switching", "Label", "Freq", "Pct", "Group")],
 # Exclude constitutive bins for a clearer view of dynamics (optional – toggle below)
 switch_dynamic <- switch_counts[!switch_counts$switching %in% c("A_A_A", "B_B_B"), ]
 
-ggplot(switch_dynamic,
+switch_bar<-ggplot(switch_dynamic,
        aes(x    = reorder(Label, -Freq),
            y    = Freq,
            fill = switching)) +
@@ -627,6 +652,8 @@ ggplot(switch_dynamic,
   ) +
   xlab("") + ylab("Number of bins") +
   labs(title = "Compartment switching patterns across conditions (REH, EP1, EP1_Aro)\n(constitutive bins excluded)")
+print(switch_bar)
+ggsave(file.path(plots_dir, "switching_barplot.pdf"), switch_bar, width = 10, height = 6)
 ```
 
 ## 5.3 Alluvial / Sankey plot of transitions
@@ -637,7 +664,22 @@ making it easy to see the dominant flows between states.
 ```{r Alluvial / Sankey plot}
 library(ggalluvial)
 
-ggplot(alluv_sum,
+alluv_sum <- cs_REH_merge %>%
+  select(switching,
+         REH     = comp_REH,
+         EP1     = comp_EP1,
+         EP1_Aro = comp_EP1_Aro) %>%
+  pivot_longer(cols      = c(REH, EP1, EP1_Aro),
+               names_to  = "Condition",
+               values_to = "Compartment") %>%
+  mutate(
+    Condition = factor(Condition, levels = c("REH", "EP1", "EP1_Aro")),
+    switching = factor(switching, levels = switching_levels)
+  ) %>%
+  group_by(switching, Condition, Compartment) %>%
+  summarise(Freq = n(), .groups = "drop")
+
+alluv_p<-ggplot(alluv_sum,
        aes(x        = Condition,
            y        = Freq,
            stratum  = Compartment,
@@ -672,6 +714,8 @@ ggplot(alluv_sum,
   ) +
   xlab("") + ylab("Number of bins") +
   labs(title = "Compartment state distribution across conditions (REH, EP1, EP1_Aro)")
+print(alluv_p)
+ggsave(file.path(plots_dir, "switch_alluvian.pdf"), alluv_p, width = 10, height = 6)
 ```
 
 ## 5.4 Pie chart of dynamic bins only
@@ -679,6 +723,12 @@ ggplot(alluv_sum,
 Among bins that change state at least once across the three conditions.
 
 ```{r pie-dynamic, fig.width=7, fig.height=7}
+dynamic_bins <- cs_REH_merge %>%
+  filter(!switching %in% c("A_A_A", "B_B_B"))
+
+n_dynamic <- nrow(dynamic_bins)
+n_total <- nrow(cs_REH_merge)
+
 pie_df <- as.data.frame(table(switching = dynamic_bins$switching)) %>%
   filter(Freq > 0) %>%
   mutate(
@@ -687,7 +737,7 @@ pie_df <- as.data.frame(table(switching = dynamic_bins$switching)) %>%
     PieLabel = paste0(Pct, "%")                            # just % on slice, full name in legend
   )
 
-ggplot(pie_df, aes(x = "", y = Freq, fill = switching)) +
+switch_pie<-ggplot(pie_df, aes(x = "", y = Freq, fill = switching)) +
   geom_col(width = 1, color = "black", linewidth = 1.1) +
   geom_text(aes(label = PieLabel),
             position = position_stack(vjust = 0.5),
@@ -705,6 +755,8 @@ ggplot(pie_df, aes(x = "", y = Freq, fill = switching)) +
     legend.title    = element_text(size = 11, face = "bold"),
     legend.position = "right"
   )
+print(switch_pie)
+ggsave(file.path(plots_dir, "switching_pie.pdf"), switch_pie, width = 10, height = 6)
 ```
 
 ## 5.5 Summary: switching groups
@@ -722,6 +774,9 @@ group_summary <- switch_counts %>%
 knitr::kable(group_summary,
              col.names = c("Group", "Bins", "% of total", "switchectories"),
              caption   = "Compartment switching groups – REH → EP1 → EP1_Aro")
+write.table(group_summary,
+            file.path(files_dir, "switch_groups.tsv"),
+            sep = "\t", row.names = FALSE, quote = FALSE)
 ```
 
 
@@ -764,14 +819,13 @@ for (col in colnames(annot_row)) {
 # ------------------------------
 # Heatmap colors
 # ------------------------------
-heat_colors <- colorRampPalette(c("blue", "white", "red"))(1000)
-
+heat_colors <- colorRampPalette(c("#2166AC", "white", "#B2182B"))(1000)
 # ------------------------------
 # Plot heatmap
 # ------------------------------
 pheatmap(cscore_heat_dyn,
          color             = heat_colors,
-         cluster_rows      = TRUE,
+         cluster_rows      = FALSE,
          cluster_cols      = FALSE,
          show_rownames     = FALSE,
          annotation_row    = annot_row,
@@ -785,6 +839,46 @@ pheatmap(cscore_heat_dyn,
          legend_breaks     = c(-1, -0.5, 0, 0.5, 1),
          main              = "Cscore Heatmap – Dynamic bins only (REH / EP1 / EP1_Aro)",
 
+         # fix margins: top, right, bottom, left
+         # increases left margin so annotation bar isn't clipped
+         mar               = c(4, 6, 4, 10))
+
+pdf(file.path(plots_dir, "cscore_heatmap.pdf"), width = 10, height = 14)
+pheatmap(cscore_heat_dyn,
+         color             = heat_colors,
+         cluster_rows      = FALSE,
+         cluster_cols      = FALSE,
+         show_rownames     = FALSE,
+         annotation_row    = annot_row,
+         annotation_colors = annot_colors,
+         annotation_names_row = FALSE,   # ← removes the "Switching" label that gets clipped
+         treeheight_row    = 50,
+         scale             = "row",
+         fontsize          = 12,
+         fontsize_col      = 13,
+         angle_col         = 45,
+         legend_breaks     = c(-1, -0.5, 0, 0.5, 1),
+         main              = "Cscore Heatmap – Dynamic bins only (REH / EP1 / EP1_Aro)",
+         # fix margins: top, right, bottom, left
+         # increases left margin so annotation bar isn't clipped
+         mar               = c(4, 6, 4, 10))
+dev.off()
+
+pheatmap(cscore_heat_dyn,
+         color             = heat_colors,
+         cluster_rows      = FALSE,
+         cluster_cols      = FALSE,
+         show_rownames     = FALSE,
+         annotation_row    = annot_row,
+         annotation_colors = annot_colors,
+         annotation_names_row = FALSE,   # ← removes the "Switching" label that gets clipped
+         treeheight_row    = 50,
+         scale             = "row",
+         fontsize          = 12,
+         fontsize_col      = 13,
+         angle_col         = 45,
+         legend_breaks     = c(-1, -0.5, 0, 0.5, 1),
+         main              = "Cscore Heatmap – Dynamic bins only (REH / EP1 / EP1_Aro)",
          # fix margins: top, right, bottom, left
          # increases left margin so annotation bar isn't clipped
          mar               = c(4, 6, 4, 10))
@@ -894,13 +988,7 @@ if (nrow(too_few) > 0) {
 }
 
 # ----------------------------------------------------------------------------
-# 4. Output directories
-# ----------------------------------------------------------------------------
-dir.create("files/enrichr_compartments", showWarnings = FALSE, recursive = TRUE)
-dir.create("plots/enrichr_compartments", showWarnings = FALSE, recursive = TRUE)
-
-# ----------------------------------------------------------------------------
-# 5. Databases (same as RNA-seq analysis)
+# 4. Databases (same as RNA-seq analysis)
 # ----------------------------------------------------------------------------
 dbs <- c("GO_Biological_Process_2023",
          "KEGG_2021_Human",
@@ -909,9 +997,10 @@ dbs <- c("GO_Biological_Process_2023",
          "MSigDB_Hallmark_2020")
 
 websiteLive <- getOption("enrichR.live", TRUE)
+setEnrichrSite("Enrichr")
 
 # ----------------------------------------------------------------------------
-# 6. Main enrichR loop — one switching class × one database at a time
+# 5. Main enrichR loop — one switching class × one database at a time
 # ----------------------------------------------------------------------------
 
 # ============================================================================
@@ -1007,7 +1096,7 @@ for (sw_class in switching_dynamic_levels) {
     save_enrichr_genelists(
       sig_terms,
       prefix  = paste0(sw_class, "_", db_name),
-      out_dir = "files/enrichr_compartments"
+      out_dir = files_dir
     )
 
     # Plot
@@ -1019,7 +1108,7 @@ for (sw_class in switching_dynamic_levels) {
     print(p)
 
     ggsave(
-      filename = file.path("plots/enrichr_compartments",
+      filename = file.path(plots_dir,
                            paste0("enrichR_", db_name, "_", sw_class, ".pdf")),
       plot   = p,
       width  = 10,
@@ -1154,7 +1243,7 @@ group_colors <- c(
   "B gain"         = "#6c3483"    # purple
 )
 
-ggplot(overlap_counts, aes(x = label, y = fold_enrichment, fill = group)) +
+overlap_polar<-ggplot(overlap_counts, aes(x = label, y = fold_enrichment, fill = group)) +
   geom_col(color = "black", linewidth = 0.4, width = 0.85) +
   geom_hline(yintercept = 1, linetype = "dashed",
              color = "gray40", linewidth = 0.5) +
@@ -1173,6 +1262,9 @@ ggplot(overlap_counts, aes(x = label, y = fold_enrichment, fill = group)) +
   ) +
   ylab("Fold Enrichment over background") +
   labs(title = "E2A-PBX1 peak enrichment per compartment switching class")
+print(overlap_polar)
+ggsave(file.path(plots_dir, "EP1_overlap_polar.pdf"), overlap_polar, width = 10, height = 6)
+
 
 # ----------------------------------------------------------------------------
 # Boxplot — cscore per condition, faceted by peak overlap, colored by condition
@@ -1195,7 +1287,7 @@ box_df <- cs_REH_merge %>%
 # Build color scale: condition colors + grey for No peak
 fill_colors <- c(cond_colors, "No peak" = "#aaaaaa")
 
-ggplot(box_df, aes(x = Condition, y = cscore, fill = fill_group)) +
+cscore_EP1_box<-ggplot(box_df, aes(x = Condition, y = cscore, fill = fill_group)) +
   geom_boxplot(outlier.size  = 0.3,
                outlier.alpha = 0.3,
                linewidth     = 0.45,
@@ -1224,17 +1316,17 @@ ggplot(box_df, aes(x = Condition, y = cscore, fill = fill_group)) +
   ) +
   xlab("Condition") + ylab("cscore") +
   labs(title = "cscore distribution – bins overlapping E2A-PBX1 peaks vs non-overlapping")
+print(cscore_EP1_box)
+ggsave(file.path(plots_dir, "EP1_overlap_cscore.pdf"), cscore_EP1_box, width = 10, height = 6)
 ```
 ---
 # . Save outputs
 
 ```{r save}
-dir.create("files",  showWarnings = FALSE)
-dir.create("plots",  showWarnings = FALSE)
 
 # Save merged annotated table
 write.table(cs_REH_merge,
-            "files/cs_REH_merge.tab",
+            file.path(files_dir, "cs_REH_merge.tab"),
             sep       = "\t",
             quote     = FALSE,
             col.names = TRUE,
