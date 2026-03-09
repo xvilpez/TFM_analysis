@@ -1075,7 +1075,7 @@ peaks_gr <- makeGRangesFromDataFrame(peaks_bed,
 cat("Total peaks loaded:", length(peaks_gr), "\n")
 
 # ----------------------------------------------------------------------------
-# Overlap peaks with every switching class (+ constitutive as background)
+# Overlap peaks with every switching class
 # ----------------------------------------------------------------------------
 all_switching_levels <- c("A_A_A", "B_B_B",
                            "B_A_A", "B_B_A",
@@ -1105,16 +1105,82 @@ overlap_counts <- lapply(all_switching_levels, function(sw) {
              pct_overlap = pct_overlap)
 }) %>% bind_rows()
 
-# Compute fold enrichment over genome-wide background
-background_pct <- sum(overlap_counts$n_overlap) / sum(overlap_counts$n_bins) * 100
+# ----------------------------------------------------------------------------
+# Background: constitutive bins only (A_A_A + B_B_B)
+# ----------------------------------------------------------------------------
+constitutive_counts <- overlap_counts %>%
+  filter(switching %in% c("A_A_A", "B_B_B")) %>%
+  summarise(n_bins    = sum(n_bins),
+            n_overlap = sum(n_overlap))
+
+bg_bins_with    <- constitutive_counts$n_overlap
+bg_bins_without <- constitutive_counts$n_bins - constitutive_counts$n_overlap
+background_pct  <- bg_bins_with / constitutive_counts$n_bins * 100
+
+cat(sprintf("Constitutive background: %d bins, %d with peak (%.2f%%)\n",
+            constitutive_counts$n_bins, bg_bins_with, background_pct))
+
+# ----------------------------------------------------------------------------
+# Fisher's exact test for each switching class vs constitutive background
+# ----------------------------------------------------------------------------
+switching_classes <- setdiff(all_switching_levels, c("A_A_A", "B_B_B"))
+
+fisher_results <- lapply(switching_classes, function(sw) {
+
+  sw_row <- overlap_counts %>% filter(switching == sw)
+
+  sw_with    <- sw_row$n_overlap
+  sw_without <- sw_row$n_bins - sw_row$n_overlap
+
+  # 2x2 contingency table:
+  #              Peak    No Peak
+  # Switching  [ sw_with,    sw_without ]
+  # Background [ bg_with,    bg_without ]
+  ct <- matrix(c(sw_with,    sw_without,
+                 bg_bins_with, bg_bins_without),
+               nrow = 2, byrow = TRUE,
+               dimnames = list(c("Switching", "Background"),
+                               c("Peak", "No_Peak")))
+
+ft <- fisher.test(ct, alternative = "two.sided")
+
+  data.frame(
+    switching  = sw,
+    n_bins     = sw_row$n_bins,
+    n_overlap  = sw_with,
+    pct_overlap = sw_row$pct_overlap,
+    OR         = ft$estimate,
+    CI_low     = ft$conf.int[1],
+    CI_high    = ft$conf.int[2],
+    p_value    = ft$p.value
+  )
+}) %>% bind_rows()
+
+# Multiple testing correction (BH)
+fisher_results <- fisher_results %>%
+  mutate(
+    p_adj          = p.adjust(p_value, method = "BH"),
+    significance   = case_when(
+      p_adj < 0.001 ~ "***",
+      p_adj < 0.01  ~ "**",
+      p_adj < 0.05  ~ "*",
+      TRUE          ~ "ns"
+    ),
+    fold_enrichment = pct_overlap / background_pct,
+    switching       = factor(switching, levels = all_switching_levels)
+  )
+
+print(fisher_results[, c("switching", "n_bins", "n_overlap",
+                          "pct_overlap", "fold_enrichment",
+                          "OR", "CI_low", "CI_high",
+                          "p_value", "p_adj", "significance")])
+
+# Also add fold enrichment to full overlap_counts for plotting
 overlap_counts <- overlap_counts %>%
   mutate(
     fold_enrichment = pct_overlap / background_pct,
     switching       = factor(switching, levels = all_switching_levels)
   )
-
-print(overlap_counts[, c("switching", "n_bins", "n_overlap",
-                          "pct_overlap", "fold_enrichment")])
 
 # ----------------------------------------------------------------------------
 # Annotate each bin with peak overlap for boxplot
@@ -1133,8 +1199,12 @@ cs_REH_merge <- cs_REH_merge %>%
 
 # ----------------------------------------------------------------------------
 # Plot 1 — Polar enrichment plot with all 8 switching classes
+# (constitutive dashed reference line at background_pct-based fold = 1)
 # ----------------------------------------------------------------------------
-overlap_polar <- ggplot(overlap_counts,
+overlap_polar_data <- overlap_counts %>%
+  filter(!switching %in% c("A_A_A", "B_B_B"))
+
+overlap_polar <- ggplot(overlap_polar_data,
                         aes(x = switching, y = fold_enrichment, fill = switching)) +
   geom_col(color = "black", linewidth = 0.4, width = 0.85) +
   geom_hline(yintercept = 1, linetype = "dashed",
@@ -1153,13 +1223,44 @@ overlap_polar <- ggplot(overlap_counts,
     panel.grid   = element_line(color = "gray85", linetype = "dashed"),
     legend.title = element_text(face = "bold")
   ) +
-  ylab("Fold Enrichment over background") +
+  ylab("Fold Enrichment over constitutive background") +
   labs(title = "E2A-PBX1 peak enrichment per compartment switching class\n(REH_EP1_EP1Aro)")
 print(overlap_polar)
 ggsave(file.path(plots_dir, "EP1_overlap_polar.pdf"), overlap_polar, width = 10, height = 6)
 
 # ----------------------------------------------------------------------------
-# Boxplot — cscore per condition, faceted by peak overlap
+# Plot 2 — Forest plot: Odds Ratio + 95% CI per switching class
+# ----------------------------------------------------------------------------
+forest_plot <- ggplot(fisher_results,
+                      aes(x = OR, y = switching, color = switching)) +
+  geom_vline(xintercept = 1, linetype = "dashed",
+             color = "gray40", linewidth = 0.5) +
+  geom_errorbarh(aes(xmin = CI_low, xmax = CI_high),
+                 height = 0.25, linewidth = 0.7) +
+  geom_point(size = 3.5) +
+  geom_text(aes(label = significance, x = CI_high),
+            hjust = -0.4, size = 5, color = "black") +
+  scale_color_manual(values = switching_colors,
+                     name   = "Switching class") +
+  scale_x_log10() +
+  theme_bw() +
+  theme(
+    axis.text.y  = element_text(size = 11, face = "bold"),
+    axis.text.x  = element_text(size = 10),
+    axis.title   = element_text(size = 12),
+    plot.title   = element_text(hjust = 0.5, face = "bold", size = 13),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor   = element_blank(),
+    legend.position    = "none"
+  ) +
+  xlab("Odds Ratio (log scale) vs constitutive background") +
+  ylab("Switching class") +
+  labs(title = "Fisher's exact test: E2A-PBX1 peak enrichment\nvs constitutive bins (A_A_A + B_B_B)")
+print(forest_plot)
+ggsave(file.path(plots_dir, "EP1_fisher_forest.pdf"), forest_plot, width = 8, height = 5)
+
+# ----------------------------------------------------------------------------
+# Plot 3 — Boxplot: cscore per condition, faceted by peak overlap
 # ----------------------------------------------------------------------------
 box_df <- cs_REH_merge %>%
   select(peak_overlap,
