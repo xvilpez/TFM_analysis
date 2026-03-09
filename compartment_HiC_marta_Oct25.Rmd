@@ -1109,7 +1109,7 @@ overlap_counts <- lapply(all_switching_levels, function(sw) {
 # Background: constitutive bins only (A_A_A + B_B_B)
 # ----------------------------------------------------------------------------
 constitutive_counts <- overlap_counts %>%
-  filter(switching %in% c("A_A_A", "B_B_B")) %>%
+  # filter(switching %in% c("A_A_A", "B_B_B")) %>%
   summarise(n_bins    = sum(n_bins),
             n_overlap = sum(n_overlap))
 
@@ -1123,7 +1123,8 @@ cat(sprintf("Constitutive background: %d bins, %d with peak (%.2f%%)\n",
 # ----------------------------------------------------------------------------
 # Fisher's exact test for each switching class vs constitutive background
 # ----------------------------------------------------------------------------
-switching_classes <- setdiff(all_switching_levels, c("A_A_A", "B_B_B"))
+# switching_classes <- setdiff(all_switching_levels, c("A_A_A", "B_B_B"))
+switching_classes <- all_switching_levels
 
 fisher_results <- lapply(switching_classes, function(sw) {
 
@@ -1201,10 +1202,8 @@ cs_REH_merge <- cs_REH_merge %>%
 # Plot 1 — Polar enrichment plot with all 8 switching classes
 # (constitutive dashed reference line at background_pct-based fold = 1)
 # ----------------------------------------------------------------------------
-overlap_polar_data <- overlap_counts %>%
-  filter(!switching %in% c("A_A_A", "B_B_B"))
 
-overlap_polar <- ggplot(overlap_polar_data,
+overlap_polar <- ggplot(overlap_counts,
                         aes(x = switching, y = fold_enrichment, fill = switching)) +
   geom_col(color = "black", linewidth = 0.4, width = 0.85) +
   geom_hline(yintercept = 1, linetype = "dashed",
