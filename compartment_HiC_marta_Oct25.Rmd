@@ -792,23 +792,6 @@ annot_colors <- list(
 heat_colors <- colorRampPalette(c("#2166AC", "white", "#B2182B"))(1000)
 
 # Plot heatmap
-pheatmap(cscore_heat_dyn,
-         color                = heat_colors,
-         cluster_rows         = FALSE,
-         cluster_cols         = FALSE,
-         show_rownames        = FALSE,
-         annotation_row       = annot_row,
-         annotation_colors    = annot_colors,
-         annotation_names_row = FALSE,
-         treeheight_row       = 50,
-         scale                = "row",
-         fontsize             = 12,
-         fontsize_col         = 13,
-         angle_col            = 45,
-         legend_breaks        = c(-1, -0.5, 0, 0.5, 1),
-         main                 = "Cscore Heatmap – Dynamic bins only (REH / EP1 / EP1_Aro)",
-         mar                  = c(4, 6, 4, 10))
-
 pdf(file.path(plots_dir, "cscore_heatmap.pdf"), width = 10, height = 14)
 pheatmap(cscore_heat_dyn,
          color                = heat_colors,
@@ -827,6 +810,24 @@ pheatmap(cscore_heat_dyn,
          main                 = "Cscore Heatmap – Dynamic bins only (REH / EP1 / EP1_Aro)",
          mar                  = c(4, 6, 4, 10))
 dev.off()
+
+pheatmap(cscore_heat_dyn,
+         color                = heat_colors,
+         cluster_rows         = FALSE,
+         cluster_cols         = FALSE,
+         show_rownames        = FALSE,
+         annotation_row       = annot_row,
+         annotation_colors    = annot_colors,
+         annotation_names_row = FALSE,
+         treeheight_row       = 50,
+         scale                = "row",
+         fontsize             = 12,
+         fontsize_col         = 13,
+         angle_col            = 45,
+         legend_breaks        = c(-1, -0.5, 0, 0.5, 1),
+         main                 = "Cscore Heatmap – Dynamic bins only (REH / EP1 / EP1_Aro)",
+         mar                  = c(4, 6, 4, 10))
+
 ```
 
 ---
