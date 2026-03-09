@@ -1748,40 +1748,42 @@ cat("\n=== ChIP PEAK MOTIF VISUALIZATIONS COMPLETE — saved to Clusters/homer_c
 ```{r Loop Anchor Gene Analysis, fig.width=12, fig.height=8}
 cat("\n=== LOOP ANCHOR GENE ANALYSIS ===\n\n")
 
-# loop_dir <- "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/loops/intersected_loops/gene_intersection"
 loop_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/loops/intersected_loops/gene_intersection"
 
 loop_files <- list(
   EP1_specific = list(
     file = "EP1_specific_only_05_10kb_exp30kb_anchors_GENES.bed",
-    contrasts = c("EP1_vs_REH", "EP1_vs_Aro"), type = "specific"
+    type = "specific"
   ),
   Aro_specific = list(
     file = "ARO_specific_only_05_10kb_exp30kb_anchors_GENES.bed",
-    contrasts = c("Aro_vs_REH", "EP1_vs_Aro"), type = "specific"
+    type = "specific"
   ),
   REH_specific = list(
     file = "REH_specific_only_05_10kb_exp30kb_anchors_GENES.bed",
-    contrasts = c("EP1_vs_REH", "Aro_vs_REH"), type = "specific"
+    type = "specific"
   ),
   shared_EP1_Aro = list(
     file = "shared_EP1_ARO_only_05_10kb_exp30kb_anchors_GENES.bed",
-    contrasts = "EP1_vs_Aro", type = "shared"
+    type = "shared"
   ),
   shared_EP1_REH = list(
     file = "shared_EP1_REH_only_05_10kb_exp30kb_anchors_GENES.bed",
-    contrasts = "EP1_vs_REH", type = "shared"
+    type = "shared"
   ),
   shared_Aro_REH = list(
     file = "shared_ARO_REH_only_05_10kb_exp30kb_anchors_GENES.bed",
-    contrasts = "Aro_vs_REH", type = "shared"
+    type = "shared"
   ),
   shared_all3 = list(
     file = "shared_loops_all3_05_10kb_exp30kb_anchors_GENES.bed",
-    contrasts = c("EP1_vs_REH", "Aro_vs_REH", "EP1_vs_Aro"), type = "shared"
+    type = "shared"
   )
 )
 
+# ----------------------------------------------------------------------------
+# 1. Load gene lists per loop category
+# ----------------------------------------------------------------------------
 loop_data <- list()
 
 for (loop_name in names(loop_files)) {
@@ -1792,8 +1794,7 @@ for (loop_name in names(loop_files)) {
     cat(paste0(loop_name, ": ", length(genes), " unique genes\n"))
     loop_data[[loop_name]] <- list(
       genes = genes,
-      contrasts = loop_files[[loop_name]]$contrasts,
-      type = loop_files[[loop_name]]$type
+      type  = loop_files[[loop_name]]$type
     )
   } else {
     cat(paste0("Warning: File not found - ", file_path, "\n"))
@@ -1801,94 +1802,293 @@ for (loop_name in names(loop_files)) {
 }
 cat("\n")
 
-lfc_results <- list()
+# ----------------------------------------------------------------------------
+# 2. Build log2 normalized + batch-corrected + mean-centered matrix
+#    (same pipeline as compartment analysis)
+# ----------------------------------------------------------------------------
+mat_norm      <- counts(dds, normalized = TRUE)
+mat_log2      <- log2(mat_norm + 1)
+
+mat_corrected <- removeBatchEffect(
+  mat_log2,
+  batch  = colData(dds)$batch,
+  design = model.matrix(~ condition, colData(dds))
+)
+
+mat_centered <- t(scale(t(mat_corrected), center = TRUE, scale = FALSE))
+
+# ----------------------------------------------------------------------------
+# 3. Long format + condition labels
+# ----------------------------------------------------------------------------
+counts_long <- as.data.frame(mat_centered) %>%
+  tibble::rownames_to_column("gene_name") %>%
+  pivot_longer(
+    cols      = -gene_name,
+    names_to  = "sample",
+    values_to = "log2_centered"
+  ) %>%
+  left_join(
+    as.data.frame(colData(dds)) %>%
+      tibble::rownames_to_column("sample") %>%
+      select(sample, condition) %>%
+      mutate(condition = factor(condition, levels = c("REH", "EP1", "Aro"))),
+    by = "sample"
+  )
+
+# ----------------------------------------------------------------------------
+# 4. Build combined data frame: one row per gene × sample × loop category
+# ----------------------------------------------------------------------------
+loop_counts_list <- list()
 
 for (loop_name in names(loop_data)) {
-  genes      <- loop_data[[loop_name]]$genes
-  contrasts  <- loop_data[[loop_name]]$contrasts
-  loop_type  <- loop_data[[loop_name]]$type
-  
-  for (contrast_name in contrasts) {
-    if (contrast_name %in% names(all_results)) {
-      df_contrast <- all_results[[contrast_name]]
-      df_filtered <- df_contrast %>%
-        filter(gene %in% genes) %>%
-        mutate(abs_lfc = abs(log2FoldChange), loop_category = loop_name,
-               loop_type = loop_type, contrast = contrast_name) %>%
-        select(gene, log2FoldChange, abs_lfc, padj, diffexpressed,
-               loop_category, loop_type, contrast)
-      
-      key <- paste0(loop_name, "_", contrast_name)
-      lfc_results[[key]] <- df_filtered
-      cat(paste0(loop_name, " in ", contrast_name, ": ", nrow(df_filtered), " genes matched\n"))
-    }
-  }
+  genes     <- loop_data[[loop_name]]$genes
+  loop_type <- loop_data[[loop_name]]$type
+
+  matched <- counts_long %>%
+    filter(gene_name %in% genes) %>%
+    mutate(
+      loop_category = loop_name,
+      loop_type     = loop_type
+    )
+
+  cat(paste0(loop_name, ": ", n_distinct(matched$gene_name), " genes matched in count matrix\n"))
+  loop_counts_list[[loop_name]] <- matched
 }
 cat("\n")
 
-lfc_combined <- bind_rows(lfc_results) %>%
-  mutate(category_label = paste0(loop_category, "\n(", contrast, ")"),
-         type_contrast  = paste0(loop_type, "_", contrast))
+loop_counts <- bind_rows(loop_counts_list) %>%
+  mutate(
+    loop_category = factor(loop_category, levels = names(loop_files)),
+    loop_type     = factor(loop_type, levels = c("specific", "shared"))
+  )
 
-cat(paste0("Total observations: ", nrow(lfc_combined), "\n\n"))
+cat(paste0("Total observations: ", nrow(loop_counts), "\n\n"))
 
-# Summary statistics
-summary_stats <- lfc_combined %>%
-  group_by(loop_category, loop_type, contrast) %>%
-  summarise(n_genes = n(), median_abs_lfc = median(abs_lfc, na.rm = TRUE),
-            mean_abs_lfc = mean(abs_lfc, na.rm = TRUE), sd_abs_lfc = sd(abs_lfc, na.rm = TRUE),
-            n_sig = sum(padj < 0.05 & !is.na(padj)), .groups = "drop")
+# ----------------------------------------------------------------------------
+# 5. Summary statistics
+# ----------------------------------------------------------------------------
+summary_stats <- loop_counts %>%
+  group_by(loop_category, loop_type, condition) %>%
+  summarise(
+    n_genes    = n_distinct(gene_name),
+    median_exp = median(log2_centered, na.rm = TRUE),
+    mean_exp   = mean(log2_centered,   na.rm = TRUE),
+    sd_exp     = sd(log2_centered,     na.rm = TRUE),
+    .groups    = "drop"
+  )
 
 cat("=== SUMMARY STATISTICS ===\n")
 print(summary_stats)
-write.table(summary_stats, file.path(loops_dir, "loop_anchor_LFC_summary.tsv"),
+write.table(summary_stats,
+            file.path(loops_dir, "loop_anchor_counts_summary.tsv"),
             sep = "\t", row.names = FALSE, quote = FALSE)
 
-# Plot 1: Boxplot by category x contrast
-p1 <- ggplot(lfc_combined, aes(x = loop_category, y = log2FoldChange, fill = loop_type)) +
-  geom_boxplot(outlier.size = 0.5, alpha = 0.7) +
-  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
-  facet_wrap(~ contrast, ncol = 3, scales = "free_x") +
-  scale_fill_manual(values = c("specific" = "#E41A1C", "shared" = "#377EB8")) +
+# ----------------------------------------------------------------------------
+# 6. Wilcoxon test per loop category: EP1 vs REH and Aro vs REH
+#    On per-gene means per condition to avoid pseudo-replication
+# ----------------------------------------------------------------------------
+sig_label <- function(p) {
+  case_when(
+    is.na(p)  ~ "ns",
+    p < 0.001 ~ "***",
+    p < 0.01  ~ "**",
+    p < 0.05  ~ "*",
+    TRUE      ~ "ns"
+  )
+}
+
+gene_means <- loop_counts %>%
+  group_by(loop_category, loop_type, gene_name, condition) %>%
+  summarise(mean_log2 = mean(log2_centered), .groups = "drop")
+
+wilcox_results <- gene_means %>%
+  group_by(loop_category, loop_type) %>%
+  summarise(
+    p_EP1_vs_REH = {
+      x <- mean_log2[condition == "EP1"]
+      y <- mean_log2[condition == "REH"]
+      if (length(x) >= 3 & length(y) >= 3) wilcox.test(x, y)$p.value else NA_real_
+    },
+    p_Aro_vs_REH = {
+      x <- mean_log2[condition == "Aro"]
+      y <- mean_log2[condition == "REH"]
+      if (length(x) >= 3 & length(y) >= 3) wilcox.test(x, y)$p.value else NA_real_
+    },
+    .groups = "drop"
+  ) %>%
+  mutate(
+    padj_EP1_vs_REH = p.adjust(p_EP1_vs_REH, method = "BH"),
+    padj_Aro_vs_REH = p.adjust(p_Aro_vs_REH, method = "BH"),
+    sig_EP1         = sig_label(padj_EP1_vs_REH),
+    sig_Aro         = sig_label(padj_Aro_vs_REH)
+  )
+
+cat("\n--- Wilcoxon results (BH-adjusted) ---\n")
+print(wilcox_results)
+write.table(wilcox_results,
+            file.path(loops_dir, "wilcoxon_log2counts_loop_categories.tsv"),
+            sep = "\t", row.names = FALSE, quote = FALSE)
+
+# ----------------------------------------------------------------------------
+# 7. y positions for significance labels
+# ----------------------------------------------------------------------------
+y_positions <- loop_counts %>%
+  group_by(loop_category) %>%
+  summarise(y95 = quantile(log2_centered, 0.95, na.rm = TRUE), .groups = "drop")
+
+bracket_df <- wilcox_results %>%
+  left_join(y_positions, by = "loop_category") %>%
+  pivot_longer(
+    cols      = c(sig_EP1, sig_Aro),
+    names_to  = "which",
+    values_to = "sig"
+  ) %>%
+  filter(sig != "ns") %>%
+  mutate(
+    condition = factor(
+      recode(which, "sig_EP1" = "EP1", "sig_Aro" = "Aro"),
+      levels = c("REH", "EP1", "Aro")
+    ),
+    y_pos = ifelse(condition == "EP1", y95 + 0.2, y95 + 0.5)
+  )
+
+# ----------------------------------------------------------------------------
+# 8. Color palettes
+# ----------------------------------------------------------------------------
+condition_colors <- c(
+  "REH" = "#4393c3",
+  "EP1" = "#d6604d",
+  "Aro" = "#74c476"
+)
+
+loop_type_colors <- c(
+  "specific" = "#E41A1C",
+  "shared"   = "#377EB8"
+)
+
+# ----------------------------------------------------------------------------
+# Plot 1 — Boxplot: condition on x-axis, faceted by loop category
+# ----------------------------------------------------------------------------
+p1 <- ggplot(
+  loop_counts,
+  aes(x = condition, y = log2_centered, fill = condition)
+) +
+  geom_boxplot(
+    outlier.size  = 0.4,
+    outlier.alpha = 0.3,
+    alpha         = 0.7,
+    linewidth     = 0.4
+  ) +
+  geom_hline(
+    yintercept = 0,
+    linetype   = "dashed",
+    color      = "gray30",
+    linewidth  = 0.4
+  ) +
+  {if (nrow(bracket_df) > 0)
+    geom_text(
+      data        = bracket_df,
+      aes(x       = condition, y = y_pos, label = sig),
+      size        = 5,
+      fontface    = "bold",
+      color       = "gray20",
+      inherit.aes = FALSE
+    )
+  } +
+  scale_fill_manual(values = condition_colors) +
+  facet_wrap(~ loop_category, nrow = 1) +
   theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
-        strip.text = element_text(face = "bold", size = 11), legend.position = "top") +
-  labs(title = "Log2 Fold Change of Loop Anchor Genes",
-       subtitle = "Comparison across specific and shared loop anchors",
-       x = "Loop Anchor Category", y = "Log2 Fold Change", fill = "Loop Type")
+  theme(
+    axis.text.x      = element_text(angle = 45, hjust = 1, size = 9),
+    axis.title       = element_text(size = 11),
+    plot.title       = element_text(hjust = 0.5, face = "bold", size = 13),
+    strip.text       = element_text(face = "bold", size = 9),
+    strip.background = element_rect(fill = "grey95", color = "black"),
+    legend.position  = "none",
+    panel.grid.minor = element_blank()
+  ) +
+  xlab("Condition") +
+  ylab("Log2 normalized counts (batch-corrected, mean-centered)") +
+  labs(title = "Gene expression at loop anchors per loop category")
+
 print(p1)
-ggsave(file.path(loops_dir, "loop_anchor_LFC_boxplot_by_category.pdf"), p1, width = 14, height = 8)
+ggsave(file.path(loops_dir, "loop_anchor_counts_boxplot_by_category.pdf"),
+       p1, width = 16, height = 6)
 
-lfc_gene <- lfc_combined %>%
-  group_by(gene, loop_type, contrast) %>%
-  summarise(log2FoldChange = median(log2FoldChange, na.rm = TRUE), .groups = "drop")
+# ----------------------------------------------------------------------------
+# Plot 2 — Violin: specific vs shared collapsed, condition on x-axis
+# ----------------------------------------------------------------------------
+gene_means_type <- gene_means %>%
+  group_by(loop_type, gene_name, condition) %>%
+  summarise(mean_log2 = mean(mean_log2), .groups = "drop")
 
-library(ggpubr)
+wilcox_type <- gene_means_type %>%
+  group_by(loop_type) %>%
+  summarise(
+    p_EP1_vs_REH = wilcox.test(
+      mean_log2[condition == "EP1"],
+      mean_log2[condition == "REH"]
+    )$p.value,
+    p_Aro_vs_REH = wilcox.test(
+      mean_log2[condition == "Aro"],
+      mean_log2[condition == "REH"]
+    )$p.value,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    sig_EP1 = sig_label(p.adjust(p_EP1_vs_REH, method = "BH")),
+    sig_Aro = sig_label(p.adjust(p_Aro_vs_REH, method = "BH"))
+  )
 
-# Plot 2: Violin specific vs shared (collapsed)
-p_pub <- ggplot(lfc_gene, aes(loop_type, log2FoldChange, fill = loop_type)) +
+y_type <- gene_means_type %>%
+  group_by(loop_type) %>%
+  summarise(y95 = quantile(mean_log2, 0.95, na.rm = TRUE), .groups = "drop")
+
+bracket_type <- wilcox_type %>%
+  left_join(y_type, by = "loop_type") %>%
+  pivot_longer(c(sig_EP1, sig_Aro), names_to = "which", values_to = "sig") %>%
+  filter(sig != "ns") %>%
+  mutate(
+    condition = factor(recode(which, "sig_EP1" = "EP1", "sig_Aro" = "Aro"),
+                       levels = c("REH", "EP1", "Aro")),
+    y_pos = ifelse(condition == "EP1", y95 + 0.2, y95 + 0.5)
+  )
+
+p2 <- ggplot(
+  gene_means_type,
+  aes(x = condition, y = mean_log2, fill = condition)
+) +
   geom_violin(trim = FALSE, alpha = 0.6) +
-  geom_boxplot(width = 0.15, outlier.shape = NA, color = "black") +
-  geom_jitter(width = 0.1, alpha = 0.25, size = 0.8) +
-  stat_compare_means(method = "wilcox.test", alternative = "greater", label = "p.signif") +
-  scale_fill_manual(values = c("shared" = "#377EB8", "specific" = "#E41A1C")) +
+  geom_boxplot(width = 0.15, outlier.shape = NA, linewidth = 0.4) +
+  geom_jitter(width = 0.1, alpha = 0.2, size = 0.6) +
+  {if (nrow(bracket_type) > 0)
+    geom_text(
+      data        = bracket_type,
+      aes(x       = condition, y = y_pos, label = sig),
+      size        = 5,
+      fontface    = "bold",
+      color       = "gray20",
+      inherit.aes = FALSE
+    )
+  } +
+  scale_fill_manual(values = condition_colors) +
+  facet_wrap(~ loop_type, nrow = 1) +
   theme_bw() +
-  theme(legend.position = "none", axis.title = element_text(size = 13),
-        axis.text = element_text(size = 11)) +
-  labs(x = "Loop type", y = "Median log2 Fold Change per gene")
-print(p_pub)
-ggsave(file.path(loops_dir, "loop_anchor_LFC_violin_specific_vs_shared.pdf"), p_pub, width = 6, height = 6)
+  theme(
+    legend.position  = "none",
+    axis.title       = element_text(size = 13),
+    axis.text        = element_text(size = 11),
+    strip.text       = element_text(face = "bold", size = 11),
+    strip.background = element_rect(fill = "grey95", color = "black"),
+    panel.grid.minor = element_blank()
+  ) +
+  xlab("Condition") +
+  ylab("Log2 normalized counts (batch-corrected, mean-centered)") +
+  labs(title = "Gene expression at loop anchors: specific vs shared")
 
-# Plot 3: Contrast-stratified
-p_contrast <- ggplot(lfc_gene, aes(loop_type, log2FoldChange, fill = loop_type)) +
-  geom_violin(trim = FALSE, alpha = 0.6) +
-  geom_boxplot(width = 0.15, outlier.shape = NA) +
-  facet_wrap(~ contrast, nrow = 1) +
-  stat_compare_means(method = "wilcox.test", alternative = "greater") +
-  scale_fill_manual(values = c("shared" = "#377EB8", "specific" = "#E41A1C")) +
-  theme_bw()
-print(p_contrast)
-ggsave(file.path(loops_dir, "loop_anchor_LFC_violin_by_contrast.pdf"), p_contrast, width = 12, height = 6)
+print(p2)
+ggsave(file.path(loops_dir, "loop_anchor_counts_violin_specific_vs_shared.pdf"),
+       p2, width = 8, height = 6)
 
 cat("\n=== LOOP ANCHOR ANALYSIS COMPLETE — plots saved to Loops/ ===\n")
 cat(paste0("Output directory: ", loops_dir, "\n\n"))
@@ -1912,21 +2112,16 @@ switching_levels <- c(
 cs_REH_merge$switching <- factor(cs_REH_merge$switching, levels = switching_levels)
 
 # ============================================================================
-# INTERSECTION: Dynamic compartments × RNA-seq DEGs
+# INTERSECTION: Dynamic compartments × normalized counts
 # ============================================================================
-library(GenomicRanges)
-library(dplyr)
-library(ggplot2)
-library(tidyr)
 
 # ----------------------------------------------------------------------------
-# 1. Build GRanges from compartment bins (dynamic only)
+# 1. Build GRanges from ALL compartment bins (dynamic + stable)
 # ----------------------------------------------------------------------------
-dynamic_bins <- cs_REH_merge %>%
-  filter(!switching %in% c("A_A_A", "B_B_B"))
+all_bins <- cs_REH_merge   # no filtering — keep A_A_A and B_B_B
 
 bins_gr <- makeGRangesFromDataFrame(
-  dynamic_bins %>% select(chr, start, end, switching),
+  all_bins %>% select(chr, start, end, switching),
   seqnames.field     = "chr",
   keep.extra.columns = TRUE
 )
@@ -1955,104 +2150,128 @@ bin_gene_map <- data.frame(
   gene_name = genes_gr$gene_name[subjectHits(hits)]
 ) %>% distinct()
 
-cat("Unique genes overlapping dynamic bins:", n_distinct(bin_gene_map$gene_name), "\n")
+cat("Unique genes overlapping all bins:", n_distinct(bin_gene_map$gene_name), "\n")
+cat("Classes present:", paste(levels(droplevels(bin_gene_map$switching)), collapse = ", "), "\n")
 
 # ----------------------------------------------------------------------------
-# 4. Pull RNA-seq results for all three contrasts
+# 4. Build log2 normalized + batch-corrected + mean-centered matrix
 # ----------------------------------------------------------------------------
-rnaseq_long <- bind_rows(
-  all_results[["EP1_vs_REH"]] %>%
-    select(gene, log2FoldChange, lfc_shrunk, padj, diffexpressed) %>%
-    mutate(contrast = "EP1_vs_REH"),
-  all_results[["Aro_vs_REH"]] %>%
-    select(gene, log2FoldChange, lfc_shrunk, padj, diffexpressed) %>%
-    mutate(contrast = "Aro_vs_REH"),
-  all_results[["EP1_vs_Aro"]] %>%
-    select(gene, log2FoldChange, lfc_shrunk, padj, diffexpressed) %>%
-    mutate(contrast = "EP1_vs_Aro")
+mat_norm      <- counts(dds, normalized = TRUE)
+mat_log2      <- log2(mat_norm + 1)
+
+mat_corrected <- removeBatchEffect(
+  mat_log2,
+  batch  = colData(dds)$batch,
+  design = model.matrix(~ condition, colData(dds))
 )
 
-# ----------------------------------------------------------------------------
-# 5. Join: bin_gene_map × RNA-seq results
-#    switching stays as 3-letter code throughout
-# ----------------------------------------------------------------------------
-comp_rnaseq <- bin_gene_map %>%
-  inner_join(rnaseq_long, by = c("gene_name" = "gene"))
-
-cat("Genes with both compartment + RNA-seq data:", n_distinct(comp_rnaseq$gene_name), "\n")
+mat_centered <- t(scale(t(mat_corrected), center = TRUE, scale = FALSE))
 
 # ----------------------------------------------------------------------------
-# 6. Concordance logic using 3-letter codes directly
-#
-#   REH | EP1 | Aro  (order of letters in the code)
-#
-#   A gains (B→A): B_A_A, B_A_B, B_B_A
-#   B gains (A→B): A_B_B, A_B_A, A_A_B
-#
-#   EP1_vs_REH: REH→EP1 switch  → B_A_A, B_A_B (A gain), A_B_B, A_B_A (B gain)
-#   Aro_vs_REH: REH→Aro switch  → B_B_A (A gain), A_A_B (B gain)
-#   EP1_vs_Aro: EP1→Aro switch  → B_A_B (EP1=A, Aro=B → UP), A_B_A (EP1=B, Aro=A → DOWN)
-#                                  B_B_A (Aro=A, EP1=B → DOWN), A_A_B (Aro=B, EP1=A → UP)
-#                                  B_A_A / A_B_B → EP1=Aro → NOT informative
+# 5. Long format + condition labels
 # ----------------------------------------------------------------------------
-comp_rnaseq <- comp_rnaseq %>%
-  mutate(
-    concordant = case_when(
-
-      # --- EP1_vs_REH ---
-      switching %in% c("B_A_A", "B_A_B") &
-        contrast == "EP1_vs_REH" & diffexpressed == "UP"   ~ "Concordant (A gain + UP)",
-      switching %in% c("B_A_A", "B_A_B") &
-        contrast == "EP1_vs_REH" & diffexpressed == "DOWN" ~ "Discordant (A gain + DOWN)",
-      switching %in% c("A_B_B", "A_B_A") &
-        contrast == "EP1_vs_REH" & diffexpressed == "DOWN" ~ "Concordant (B gain + DOWN)",
-      switching %in% c("A_B_B", "A_B_A") &
-        contrast == "EP1_vs_REH" & diffexpressed == "UP"   ~ "Discordant (B gain + UP)",
-
-      # --- Aro_vs_REH ---
-      switching == "B_B_A" &
-        contrast == "Aro_vs_REH" & diffexpressed == "UP"   ~ "Concordant (A gain + UP)",
-      switching == "B_B_A" &
-        contrast == "Aro_vs_REH" & diffexpressed == "DOWN" ~ "Discordant (A gain + DOWN)",
-      switching == "A_A_B" &
-        contrast == "Aro_vs_REH" & diffexpressed == "DOWN" ~ "Concordant (B gain + DOWN)",
-      switching == "A_A_B" &
-        contrast == "Aro_vs_REH" & diffexpressed == "UP"   ~ "Discordant (B gain + UP)",
-
-      # --- EP1_vs_Aro ---
-      # B_A_B: EP1=A, Aro=B → EP1 more open → expect UP
-      # A_A_B: EP1=A, Aro=B → same → expect UP
-      switching %in% c("B_A_B", "A_A_B") &
-        contrast == "EP1_vs_Aro" & diffexpressed == "UP"   ~ "Concordant (A gain + UP)",
-      switching %in% c("B_A_B", "A_A_B") &
-        contrast == "EP1_vs_Aro" & diffexpressed == "DOWN" ~ "Discordant (A gain + DOWN)",
-      # A_B_A: EP1=B, Aro=A → EP1 more closed → expect DOWN
-      # B_B_A: EP1=B, Aro=A → same → expect DOWN
-      switching %in% c("A_B_A", "B_B_A") &
-        contrast == "EP1_vs_Aro" & diffexpressed == "DOWN" ~ "Concordant (B gain + DOWN)",
-      switching %in% c("A_B_A", "B_B_A") &
-        contrast == "EP1_vs_Aro" & diffexpressed == "UP"   ~ "Discordant (B gain + UP)",
-
-      TRUE ~ "Not DEG"
-    )
+counts_long <- as.data.frame(mat_centered) %>%
+  tibble::rownames_to_column("gene_name") %>%
+  pivot_longer(
+    cols      = -gene_name,
+    names_to  = "sample",
+    values_to = "log2_centered"
+  ) %>%
+  left_join(
+    as.data.frame(colData(dds)) %>%
+      tibble::rownames_to_column("sample") %>%
+      select(sample, condition) %>%
+      mutate(condition = factor(condition, levels = c("REH", "EP1", "Aro"))),
+    by = "sample"
   )
 
-# Summary table
-concordance_summary <- comp_rnaseq %>%
-  dplyr::count(switching, contrast, concordant) %>%
-  dplyr::arrange(switching, concordant)
+# ----------------------------------------------------------------------------
+# 6. Join with bin_gene_map → ALL compartment classes including A_A_A and B_B_B
+# ----------------------------------------------------------------------------
+all_classes <- c("A_A_A", "B_B_B", "B_A_A", "B_B_A", "B_A_B", "A_B_B", "A_A_B", "A_B_A")
 
-print(concordance_summary)
-write.table(concordance_summary,
-            file.path(comp_dir, "concordance_summary.tsv"),
+counts_comp <- bin_gene_map %>%
+  inner_join(counts_long, by = "gene_name") %>%
+  filter(switching %in% all_classes) %>%
+  mutate(switching = factor(switching, levels = all_classes))
+
+cat("Genes in all compartment bins with count data:", n_distinct(counts_comp$gene_name), "\n")
+
+# ----------------------------------------------------------------------------
+# 7. Wilcoxon test per switching class: EP1 vs REH and Aro vs REH
+#    On per-gene means per condition to avoid pseudo-replication
+# ----------------------------------------------------------------------------
+gene_means <- counts_comp %>%
+  group_by(switching, gene_name, condition) %>%
+  summarise(mean_log2 = mean(log2_centered), .groups = "drop")
+
+sig_label <- function(p) {
+  case_when(
+    is.na(p)  ~ "ns",
+    p < 0.001 ~ "***",
+    p < 0.01  ~ "**",
+    p < 0.05  ~ "*",
+    TRUE      ~ "ns"
+  )
+}
+
+wilcox_results <- gene_means %>%
+  group_by(switching) %>%
+  summarise(
+    p_EP1_vs_REH = {
+      x <- mean_log2[condition == "EP1"]
+      y <- mean_log2[condition == "REH"]
+      if (length(x) >= 3 & length(y) >= 3) wilcox.test(x, y)$p.value else NA_real_
+    },
+    p_Aro_vs_REH = {
+      x <- mean_log2[condition == "Aro"]
+      y <- mean_log2[condition == "REH"]
+      if (length(x) >= 3 & length(y) >= 3) wilcox.test(x, y)$p.value else NA_real_
+    },
+    .groups = "drop"
+  ) %>%
+  mutate(
+    padj_EP1_vs_REH = p.adjust(p_EP1_vs_REH, method = "BH"),
+    padj_Aro_vs_REH = p.adjust(p_Aro_vs_REH, method = "BH"),
+    sig_EP1         = sig_label(padj_EP1_vs_REH),
+    sig_Aro         = sig_label(padj_Aro_vs_REH)
+  )
+
+cat("\n--- Wilcoxon results (BH-adjusted) ---\n")
+print(wilcox_results)
+write.table(wilcox_results,
+            file.path(comp_dir, "wilcoxon_log2counts_all_classes.tsv"),
             sep = "\t", row.names = FALSE, quote = FALSE)
 
 # ----------------------------------------------------------------------------
-# 7. Plot 1 — LFC distribution per switching class (3-letter codes), all contrasts
+# 8. Significance labels positioned above EP1 and Aro per facet
 # ----------------------------------------------------------------------------
+y_positions <- counts_comp %>%
+  group_by(switching) %>%
+  summarise(y95 = quantile(log2_centered, 0.95, na.rm = TRUE), .groups = "drop")
 
-# Color palette for the 6 dynamic classes
+bracket_df <- wilcox_results %>%
+  left_join(y_positions, by = "switching") %>%
+  pivot_longer(
+    cols      = c(sig_EP1, sig_Aro),
+    names_to  = "which",
+    values_to = "sig"
+  ) %>%
+  filter(sig != "ns") %>%
+  mutate(
+    condition = factor(
+      recode(which, "sig_EP1" = "EP1", "sig_Aro" = "Aro"),
+      levels = c("REH", "EP1", "Aro")
+    ),
+    y_pos = ifelse(condition == "EP1", y95 + 0.2, y95 + 0.5)
+  )
+
+# ----------------------------------------------------------------------------
+# 9. Boxplot: condition on x-axis, faceted by switching class (all 8 classes)
+# ----------------------------------------------------------------------------
 switching_colors <- c(
+  "A_A_A" = "#1a1a1a",   # stable A → dark
+  "B_B_B" = "#bdbdbd",   # stable B → light grey
   "B_A_A" = "#d95f02",
   "B_A_B" = "#fdae61",
   "B_B_A" = "#fee08b",
@@ -2061,125 +2280,59 @@ switching_colors <- c(
   "A_A_B" = "#b2abd2"
 )
 
-lfc_plot <- ggplot(comp_rnaseq,
-       aes(x = switching, y = lfc_shrunk, fill = switching)) +
-  geom_boxplot(outlier.size = 0.4, outlier.alpha = 0.4, alpha = 0.85) +
-  geom_hline(yintercept = 0, linetype = "dashed", color = "gray30") +
-  facet_wrap(~ contrast, nrow = 1) +
-  scale_fill_manual(values = switching_colors, na.value = "grey70") +
-  theme_bw() +
-  theme(axis.text.x  = element_text(angle = 45, hjust = 1, size = 10),
-        strip.text   = element_text(face = "bold"),
-        plot.title   = element_text(hjust = 0.5, face = "bold")) +
-  xlab("Compartment switching class (REH | EP1 | Aro)") +
-  ylab("Shrunken Log2 Fold Change") +
-  labs(title = "RNA-seq LFC in dynamic compartment bins",
-       fill  = "Switching class")
-print(lfc_plot)
-ggsave(file.path(comp_dir, "LFC_distribution_switching_classes.pdf"),
-       plot = lfc_plot, width = 12, height = 6)
-
-# ----------------------------------------------------------------------------
-# 8. Plot 2 — Concordance bar plot (3-letter codes on x-axis)
-# ----------------------------------------------------------------------------
-concordance_colors <- c(
-  "Concordant (A gain + UP)"   = "#f0a500",
-  "Concordant (B gain + DOWN)" = "#6c3483",
-  "Discordant (A gain + DOWN)" = "#f9d08b",
-  "Discordant (B gain + UP)"   = "#c39bd3"
-)
-
-concordance_plot_df <- comp_rnaseq %>%
-  dplyr::filter(concordant != "Not DEG") %>%
-  dplyr::count(switching, contrast, concordant) %>%
-  mutate(contrast = factor(contrast,
-                           levels = c("EP1_vs_REH", "Aro_vs_REH", "EP1_vs_Aro")))
-
-concordance_plot <- ggplot(concordance_plot_df,
-       aes(x = switching, y = n, fill = concordant)) +
-  geom_bar(stat = "identity", position = "dodge",
-           color = "black", linewidth = 0.35) +
-  scale_fill_manual(values = concordance_colors) +
-  facet_wrap(~ contrast, nrow = 1, scales = "free_x") +
-  theme_bw() +
-  theme(plot.title  = element_text(hjust = 0.5, face = "bold"),
-        axis.text.x = element_text(angle = 30, hjust = 1)) +
-  xlab("Switching class (REH | EP1 | Aro)") +
-  ylab("Number of genes") +
-  labs(title = "Compartment–transcription concordance (all contrasts)",
-       fill  = "Category")
-print(concordance_plot)
-ggsave(file.path(comp_dir, "Transcription_concordance_switching_classes.pdf"),
-       plot = concordance_plot, width = 14, height = 6)
-
-# ----------------------------------------------------------------------------
-# 9. Volcano plot — colored by switching class (3-letter codes)
-# ----------------------------------------------------------------------------
-library(ggrepel)
-
-lfc_thresh  <- 1
-padj_thresh <- 0.05
-
-volcano_df <- comp_rnaseq %>%
-  mutate(
-    neglog10_padj = -log10(padj),
-    contrast = factor(contrast, levels = c("EP1_vs_REH", "Aro_vs_REH", "EP1_vs_Aro")),
-    point_class = case_when(
-      padj < padj_thresh & abs(lfc_shrunk) > lfc_thresh ~ as.character(switching),
-      TRUE                                               ~ "Not significant"
-    )
-  )
-
-top_hits <- volcano_df %>%
-  filter(padj < padj_thresh, abs(lfc_shrunk) > lfc_thresh) %>%
-  group_by(contrast) %>%
-  slice_max(order_by = neglog10_padj, n = 10) %>%
-  ungroup()
-
-point_colors <- c(switching_colors, "Not significant" = "grey75")
-point_sizes  <- c(setNames(rep(2, 6), names(switching_colors)), "Not significant" = 1)
-point_alpha  <- c(setNames(rep(0.9, 6), names(switching_colors)), "Not significant" = 0.4)
-
-volcano_comp_plot <- ggplot(volcano_df,
-       aes(x = lfc_shrunk, y = neglog10_padj,
-           color = point_class, size = point_class, alpha = point_class)) +
-  geom_point() +
-  geom_vline(xintercept = c(-lfc_thresh, lfc_thresh),
-             linetype = "dashed", color = "black", linewidth = 0.4) +
-  geom_hline(yintercept = -log10(padj_thresh),
-             linetype = "dashed", color = "black", linewidth = 0.4) +
-  geom_text_repel(
-    data          = top_hits,
-    aes(x = lfc_shrunk, y = neglog10_padj, label = gene_name),
-    size          = 3, color = "gray20", max.overlaps = 20,
-    box.padding   = 0.4, segment.color = "gray50", segment.size = 0.3,
-    min.segment.length = 0.2, inherit.aes = FALSE
+counts_boxplot <- ggplot(
+  counts_comp,
+  aes(x = condition, y = log2_centered, fill = switching)
+) +
+  geom_boxplot(
+    outlier.size  = 0.4,
+    outlier.alpha = 0.3,
+    alpha         = 0.7,
+    linewidth     = 0.4
   ) +
-  facet_wrap(~ contrast, nrow = 1) +
-  scale_color_manual(values = point_colors) +
-  scale_size_manual(values  = point_sizes) +
-  scale_alpha_manual(values = point_alpha) +
+  geom_hline(
+    yintercept = 0,
+    linetype   = "dashed",
+    color      = "gray30",
+    linewidth  = 0.4
+  ) +
+  {if (nrow(bracket_df) > 0)
+    geom_text(
+      data        = bracket_df,
+      aes(x       = condition, y = y_pos, label = sig),
+      size        = 5,
+      fontface    = "bold",
+      color       = "gray20",
+      inherit.aes = FALSE
+    )
+  } +
+  scale_fill_manual(values = switching_colors) +
+  facet_wrap(~ switching, nrow = 2, ncol = 4) +
   theme_bw() +
   theme(
-    panel.grid.major = element_line(color = "grey90"),
-    panel.grid.minor = element_blank(),
-    plot.title       = element_text(hjust = 0, face = "bold", size = 13),
-    strip.text       = element_text(face = "bold", size = 11),
+    axis.text.x      = element_text(angle = 45, hjust = 1, size = 10),
+    axis.title       = element_text(size = 11),
+    plot.title       = element_text(hjust = 0.5, face = "bold", size = 13),
+    strip.text       = element_text(face = "bold"),
     strip.background = element_rect(fill = "grey95", color = "black"),
-    legend.title     = element_text(face = "bold", size = 10),
-    axis.title       = element_text(size = 11)
+    legend.position  = "none",
+    panel.grid.minor = element_blank()
   ) +
-  guides(size = "none", alpha = "none") +
-  labs(
-    title = "Volcano plot — genes in dynamic compartments",
-    x     = "Shrunken log2 Fold Change",
-    y     = "-log10 adjusted p-value",
-    color = "Switching class\n(REH|EP1|Aro)"
-  )
-print(volcano_comp_plot)
-ggsave(file.path(comp_dir, "Volcano_switching_classes.pdf"),
-       plot = volcano_comp_plot, width = 12, height = 6)
+  xlab("Condition") +
+  ylab("Log2 normalized counts (batch-corrected, mean-centered)") +
+  labs(title = "Gene expression across all compartment classes")
+
+print(counts_boxplot)
+ggsave(
+  file.path(comp_dir, "Log2counts_boxplot_all_classes.pdf"),
+  plot   = counts_boxplot,
+  width  = 16,
+  height = 10
+)
+
+cat("\n=== Compartment intersection analysis complete ===\n")
 ```
+
 ```{r Compartment enrichment}
 # ----------------------------------------------------------------------------
 # Enrichment: switching class × contrast × direction (UP / DOWN)
