@@ -7,8 +7,8 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
-#knitr::opts_knit$set(root.dir ="/ijc/LABS/STIK/RAW/rna_seq/rnaseq_marta_REHAro_dec25") ### If I run it through OnDemand server
-knitr::opts_knit$set(root.dir = "R:/R_STIK/rna_seq/rnaseq_marta_REHAro_dec25") ### If I run it in the workstation
+knitr::opts_knit$set(root.dir ="/ijc/LABS/STIK/RAW/rna_seq/rnaseq_marta_REHAro_dec25") ### If I run it through OnDemand server
+# knitr::opts_knit$set(root.dir = "R:/R_STIK/rna_seq/rnaseq_marta_REHAro_dec25") ### If I run it in the workstation
 ```
 
 ```{r initialization, warning=FALSE, message=FALSE}
@@ -1046,8 +1046,8 @@ library(GenomicRanges)
 library(TxDb.Hsapiens.UCSC.hg38.knownGene)
 library(org.Hs.eg.db)
 
-# chip_path <- "/mnt/beegfs/xvilchez/chip_publicdata/697HF_E2APBX1-HF_peaks.bed"
-chip_path <- "R:/R_STIK/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed"
+chip_path <- "/mnt/beegfs/xvilchez/chip_publicdata/697HF_E2APBX1-HF_peaks.bed"
+# chip_path <- "R:/R_STIK/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed"
 
 if (!file.exists(chip_path)) {
   stop("ChIP-seq peak file not found at: ", chip_path)
@@ -1748,7 +1748,9 @@ cat("\n=== ChIP PEAK MOTIF VISUALIZATIONS COMPLETE — saved to Clusters/homer_c
 ```{r Loop Anchor Gene Analysis, fig.width=12, fig.height=8}
 cat("\n=== LOOP ANCHOR GENE ANALYSIS ===\n\n")
 
-loop_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/loops/intersected_loops/gene_intersection"
+loop_dir <- "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/loops/intersected_loops/gene_intersection"
+
+# loop_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/loops/intersected_loops/gene_intersection"
 
 loop_files <- list(
   EP1_specific = list(
@@ -1864,16 +1866,24 @@ loop_counts <- bind_rows(loop_counts_list) %>%
 
 cat(paste0("Total observations: ", nrow(loop_counts), "\n\n"))
 
+# After building loop_counts, add absolute value column
+loop_counts <- bind_rows(loop_counts_list) %>%
+  mutate(
+    loop_category    = factor(loop_category, levels = names(loop_files)),
+    loop_type        = factor(loop_type, levels = c("specific", "shared")),
+    abs_log2_centered = abs(log2_centered)   # <-- NEW
+  )
+
 # ----------------------------------------------------------------------------
-# 5. Summary statistics
+# 5. Summary statistics  (log2_centered → abs_log2_centered)
 # ----------------------------------------------------------------------------
 summary_stats <- loop_counts %>%
   group_by(loop_category, loop_type, condition) %>%
   summarise(
     n_genes    = n_distinct(gene_name),
-    median_exp = median(log2_centered, na.rm = TRUE),
-    mean_exp   = mean(log2_centered,   na.rm = TRUE),
-    sd_exp     = sd(log2_centered,     na.rm = TRUE),
+    median_exp = median(abs_log2_centered, na.rm = TRUE),
+    mean_exp   = mean(abs_log2_centered,   na.rm = TRUE),
+    sd_exp     = sd(abs_log2_centered,     na.rm = TRUE),
     .groups    = "drop"
   )
 
@@ -1899,7 +1909,7 @@ sig_label <- function(p) {
 
 gene_means <- loop_counts %>%
   group_by(loop_category, loop_type, gene_name, condition) %>%
-  summarise(mean_log2 = mean(log2_centered), .groups = "drop")
+  summarise(mean_log2 = mean(abs_log2_centered), .groups = "drop")   # <-- abs here
 
 wilcox_results <- gene_means %>%
   group_by(loop_category, loop_type) %>%
@@ -1934,7 +1944,7 @@ write.table(wilcox_results,
 # ----------------------------------------------------------------------------
 y_positions <- loop_counts %>%
   group_by(loop_category) %>%
-  summarise(y95 = quantile(log2_centered, 0.95, na.rm = TRUE), .groups = "drop")
+  summarise(y95 = quantile(abs_log2_centered, 0.95, na.rm = TRUE), .groups = "drop")
 
 bracket_df <- wilcox_results %>%
   left_join(y_positions, by = "loop_category") %>%
@@ -1967,11 +1977,11 @@ loop_type_colors <- c(
 )
 
 # ----------------------------------------------------------------------------
-# Plot 1 — Boxplot: condition on x-axis, faceted by loop category
+# Plot 1 — Boxplot
 # ----------------------------------------------------------------------------
 p1 <- ggplot(
   loop_counts,
-  aes(x = condition, y = log2_centered, fill = condition)
+  aes(x = condition, y = abs_log2_centered, fill = condition)   # <-- abs here
 ) +
   geom_boxplot(
     outlier.size  = 0.4,
@@ -1979,12 +1989,7 @@ p1 <- ggplot(
     alpha         = 0.7,
     linewidth     = 0.4
   ) +
-  geom_hline(
-    yintercept = 0,
-    linetype   = "dashed",
-    color      = "gray30",
-    linewidth  = 0.4
-  ) +
+  # geom_hline removed — zero baseline not meaningful for absolute values
   {if (nrow(bracket_df) > 0)
     geom_text(
       data        = bracket_df,
@@ -2008,15 +2013,15 @@ p1 <- ggplot(
     panel.grid.minor = element_blank()
   ) +
   xlab("Condition") +
-  ylab("Log2 normalized counts (batch-corrected, mean-centered)") +
-  labs(title = "Gene expression at loop anchors per loop category")
+  ylab("|Log2 normalized counts| (batch-corrected, mean-centered)") +
+  labs(title = "Gene expression magnitude at loop anchors per loop category")
 
 print(p1)
-ggsave(file.path(loops_dir, "loop_anchor_counts_boxplot_by_category.pdf"),
+ggsave(file.path(loops_dir, "loop_anchor_abs_counts_boxplot_by_category.pdf"),
        p1, width = 16, height = 6)
 
 # ----------------------------------------------------------------------------
-# Plot 2 — Violin: specific vs shared collapsed, condition on x-axis
+# Plot 2 — Violin: specific vs shared
 # ----------------------------------------------------------------------------
 gene_means_type <- gene_means %>%
   group_by(loop_type, gene_name, condition) %>%
@@ -2049,8 +2054,10 @@ bracket_type <- wilcox_type %>%
   pivot_longer(c(sig_EP1, sig_Aro), names_to = "which", values_to = "sig") %>%
   filter(sig != "ns") %>%
   mutate(
-    condition = factor(recode(which, "sig_EP1" = "EP1", "sig_Aro" = "Aro"),
-                       levels = c("REH", "EP1", "Aro")),
+    condition = factor(
+      recode(which, "sig_EP1" = "EP1", "sig_Aro" = "Aro"),
+      levels = c("REH", "EP1", "Aro")
+    ),
     y_pos = ifelse(condition == "EP1", y95 + 0.2, y95 + 0.5)
   )
 
@@ -2083,15 +2090,12 @@ p2 <- ggplot(
     panel.grid.minor = element_blank()
   ) +
   xlab("Condition") +
-  ylab("Log2 normalized counts (batch-corrected, mean-centered)") +
-  labs(title = "Gene expression at loop anchors: specific vs shared")
+  ylab("|Log2 normalized counts| (batch-corrected, mean-centered)") +
+  labs(title = "Expression magnitude at loop anchors: specific vs shared")
 
 print(p2)
-ggsave(file.path(loops_dir, "loop_anchor_counts_violin_specific_vs_shared.pdf"),
+ggsave(file.path(loops_dir, "loop_anchor_abs_counts_violin_specific_vs_shared.pdf"),
        p2, width = 8, height = 6)
-
-cat("\n=== LOOP ANCHOR ANALYSIS COMPLETE — plots saved to Loops/ ===\n")
-cat(paste0("Output directory: ", loops_dir, "\n\n"))
 ```
 
 ```{r Compartment intersection}
