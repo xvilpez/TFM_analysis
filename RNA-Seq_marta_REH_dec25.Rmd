@@ -2099,7 +2099,8 @@ ggsave(file.path(loops_dir, "loop_anchor_abs_counts_violin_specific_vs_shared.pd
 ```
 
 ```{r Compartment intersection}
-data <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore/Comp_Analysis/files/cs_REH_merge.tab"
+# data <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore/Comp_Analysis/files/cs_REH_merge.tab"
+data <- "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore/Comp_Analysis/files/cs_REH_merge.tab"
 
 cs_REH_merge <- read.table(data,
                             sep       = "\t",
@@ -2133,7 +2134,14 @@ bins_gr <- makeGRangesFromDataFrame(
 # ----------------------------------------------------------------------------
 # 2. Load gene annotation
 # ----------------------------------------------------------------------------
-genes_bed <- read.table("R:/R_STIK/xavi_scripts/genes_gencode.v28.bed",
+# genes_bed <- read.table("R:/R_STIK/xavi_scripts/genes_gencode.v28.bed",
+#                         sep = "\t", header = FALSE,
+#                         col.names = c("chrom", "start", "end", "strand",
+#                                       "gene_name", "ID", "description")) %>%
+#   select(chrom, start, end, gene_name) %>%
+#   mutate(start = as.integer(start), end = as.integer(end))
+
+genes_bed <- read.table("/ijc/LABS/STIK/RAW/xavi_scripts/genes_gencode.v28.bed",
                         sep = "\t", header = FALSE,
                         col.names = c("chrom", "start", "end", "strand",
                                       "gene_name", "ID", "description")) %>%
@@ -2439,4 +2447,146 @@ for (i in seq_len(nrow(comp_gene_lists))) {
 }
 
 cat("\n=== Compartment enrichR analysis complete ===\n")
+```
+
+```{r Master Gene Annotation Table}
+cat("\n=== BUILDING MASTER GENE ANNOTATION TABLE ===\n\n")
+
+# ----------------------------------------------------------------------------
+# 1. Normalized counts (wide format: one column per sample)
+# ----------------------------------------------------------------------------
+norm_counts <- as.data.frame(counts(dds, normalized = TRUE))
+norm_counts$gene <- rownames(norm_counts)
+
+# ----------------------------------------------------------------------------
+# 2. DEG info: one row per gene × contrast × direction
+#    Use all_results (list of data frames from the contrasts loop)
+# ----------------------------------------------------------------------------
+deg_info <- bind_rows(all_results) %>%
+  select(gene, contrast, diffexpressed, log2FoldChange, lfc_shrunk, padj) %>%
+  filter(diffexpressed != "NO") %>%          # keep only actual DEGs
+  rename(
+    DEG_direction  = diffexpressed,
+    log2FC_raw     = log2FoldChange,
+    log2FC_shrunk  = lfc_shrunk,
+    DEG_padj       = padj
+  )
+
+# For genes that are DEG in more than one contrast, collapse into
+# semicolon-separated strings so we end up with one row per gene
+deg_collapsed <- deg_info %>%
+  group_by(gene) %>%
+  summarise(
+    is_DEG        = TRUE,
+    DEG_contrasts = paste(contrast,      collapse = ";"),
+    DEG_direction = paste(DEG_direction, collapse = ";"),
+    DEG_log2FC    = paste(round(log2FC_raw,    3), collapse = ";"),
+    DEG_log2FC_sh = paste(round(log2FC_shrunk, 3), collapse = ";"),
+    DEG_padj      = paste(formatC(DEG_padj, format = "e", digits = 2), collapse = ";"),
+    .groups = "drop"
+  )
+
+# ----------------------------------------------------------------------------
+# 3. Cluster membership (from kmeans clustering)
+# ----------------------------------------------------------------------------
+cluster_info <- data.frame(
+  gene    = names(clusters),
+  cluster = as.integer(clusters)
+)
+
+# ----------------------------------------------------------------------------
+# 4. Loop anchor membership
+#    loop_data is the list built in "Loop Anchor Gene Analysis"
+#    Each element holds $genes (character vector) and $type (specific/shared)
+# ----------------------------------------------------------------------------
+loop_info <- bind_rows(
+  lapply(names(loop_data), function(nm) {
+    data.frame(
+      gene          = loop_data[[nm]]$genes,
+      loop_category = nm,
+      loop_type     = loop_data[[nm]]$type,
+      stringsAsFactors = FALSE
+    )
+  })
+) %>%
+  # A gene can appear in multiple loop categories → collapse
+  group_by(gene) %>%
+  summarise(
+    loop_categories = paste(sort(unique(loop_category)), collapse = ";"),
+    loop_types      = paste(sort(unique(loop_type)),     collapse = ";"),
+    .groups = "drop"
+  )
+
+# ----------------------------------------------------------------------------
+# 5. Compartment class
+#    bin_gene_map was built in "Compartment intersection"
+# ----------------------------------------------------------------------------
+comp_info <- bin_gene_map %>%
+  rename(gene = gene_name) %>%
+  group_by(gene) %>%
+  summarise(
+    compartment_class = paste(sort(unique(as.character(switching))), collapse = ";"),
+    .groups = "drop"
+  )
+
+# ----------------------------------------------------------------------------
+# 6. Assemble master table
+# ----------------------------------------------------------------------------
+all_genes <- data.frame(gene = rownames(norm_counts), stringsAsFactors = FALSE)
+
+master_table <- all_genes %>%
+  left_join(norm_counts,     by = "gene") %>%
+  left_join(deg_collapsed,   by = "gene") %>%
+  left_join(cluster_info,    by = "gene") %>%
+  left_join(loop_info,       by = "gene") %>%
+  left_join(comp_info,       by = "gene") %>%
+  mutate(
+    is_DEG = ifelse(is.na(is_DEG), FALSE, is_DEG)
+  ) %>%
+  # Reorder: gene | annotation cols | counts
+  select(
+    gene,
+    is_DEG,
+    DEG_contrasts, DEG_direction, DEG_log2FC, DEG_log2FC_sh, DEG_padj,
+    cluster,
+    loop_categories, loop_types,
+    compartment_class,
+    everything()
+  ) %>%
+  arrange(desc(is_DEG), DEG_contrasts, gene)
+
+cat(paste("Total genes in master table:", nrow(master_table), "\n"))
+cat(paste("DEGs annotated:", sum(master_table$is_DEG), "\n"))
+cat(paste("Genes with cluster assignment:", sum(!is.na(master_table$cluster)), "\n"))
+cat(paste("Genes with loop annotation:", sum(!is.na(master_table$loop_categories)), "\n"))
+cat(paste("Genes with compartment annotation:", sum(!is.na(master_table$compartment_class)), "\n\n"))
+
+# ----------------------------------------------------------------------------
+# 7. Export
+# ----------------------------------------------------------------------------
+out_path <- file.path(output_dir, "master_gene_annotation_table.tsv")
+write.table(
+  master_table,
+  out_path,
+  sep       = "\t",
+  row.names = FALSE,
+  quote     = FALSE,
+  na        = ""
+)
+
+cat(paste("Master table saved to:", out_path, "\n"))
+cat("\nColumn legend:\n")
+cat("  is_DEG          – TRUE if DEG in at least one contrast\n")
+cat("  DEG_contrasts   – semicolon-separated list of contrasts where gene is DEG\n")
+cat("  DEG_direction   – UP / DOWN per contrast (same order as DEG_contrasts)\n")
+cat("  DEG_log2FC      – raw log2FC per contrast\n")
+cat("  DEG_log2FC_sh   – ashr-shrunken log2FC per contrast\n")
+cat("  DEG_padj        – adjusted p-value per contrast\n")
+cat("  cluster         – k-means cluster (k=", optimal_k, "); NA if not a DEG\n", sep="")
+cat("  loop_categories – loop condition(s) where gene's TSS overlaps an anchor\n")
+cat("  loop_types      – specific / shared (mirrors loop_categories)\n")
+cat("  compartment_class – A/B switching pattern (e.g. B_A_A = B in REH, A in EP1, A in Aro)\n")
+cat("  remaining cols  – per-sample DESeq2 normalized counts\n")
+
+cat("\n=== MASTER TABLE COMPLETE ===\n")
 ```
