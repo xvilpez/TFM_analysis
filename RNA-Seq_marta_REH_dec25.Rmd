@@ -1221,6 +1221,168 @@ ggsave(file.path(clusters_dir, "ChIP_peak_TSS_distance_violin.pdf"), p_violin, w
 cat("\n=== CHIP ANALYSIS COMPLETE — plots saved to Clusters/ ===\n")
 ```
 
+```{r Top25 ChIP-seq Peak to TSS Distance Analysis}
+cat("\n=== TOP25 ChIP-SEQ PEAK TO TSS DISTANCE ANALYSIS ===\n\n")
+
+library(GenomicRanges)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(org.Hs.eg.db)
+
+chip_path_top25 <- "/mnt/beegfs/xvilchez/chip_publicdata/top25_697HF_E2APBX1-HF_peaks.bed"
+
+if (!file.exists(chip_path_top25)) {
+  stop("Top25 ChIP-seq peak file not found at: ", chip_path_top25)
+}
+
+peaks_top25_df <- read.table(chip_path_top25, header = FALSE, stringsAsFactors = FALSE)
+colnames(peaks_top25_df)[1:3] <- c("chr", "start", "end")
+
+peaks_top25_gr <- GRanges(
+  seqnames = peaks_top25_df$chr,
+  ranges   = IRanges(start = peaks_top25_df$start, end = peaks_top25_df$end)
+)
+
+cat(paste0("Loaded ", length(peaks_top25_gr), " top25 ChIP-seq peaks\n"))
+
+# Re-use tss_gr and genes_gr built in the previous ChIP chunk
+cat(paste0("Using ", length(tss_gr), " genes with TSS coordinates\n\n"))
+
+cluster_peak_top25_analysis <- list()
+
+for (k in 1:optimal_k) {
+  cat(paste0("=== Analyzing Cluster ", k, " ===\n"))
+  cluster_genes    <- names(clusters)[clusters == k]
+  cluster_tss      <- tss_gr[tss_gr$symbol %in% cluster_genes]
+  cat(paste0("  Cluster has ", length(cluster_genes), " genes\n"))
+  cat(paste0("  ", length(cluster_tss), " genes with TSS coordinates\n"))
+
+  nearest_peaks    <- distanceToNearest(cluster_tss, peaks_top25_gr, ignore.strand = TRUE)
+  distances        <- mcols(nearest_peaks)$distance
+  within_threshold <- distances <= max_distance
+
+  n_genes_total     <- length(cluster_tss)
+  n_genes_with_peak <- sum(within_threshold)
+  pct_with_peak     <- (n_genes_with_peak / n_genes_total) * 100
+  avg_distance      <- mean(distances[within_threshold])
+  median_distance   <- median(distances[within_threshold])
+
+  cluster_peak_top25_analysis[[k]] <- list(
+    cluster           = k,
+    n_genes_total     = n_genes_total,
+    n_genes_with_peak = n_genes_with_peak,
+    pct_with_peak     = pct_with_peak,
+    avg_distance      = avg_distance,
+    median_distance   = median_distance,
+    distances         = distances[within_threshold],
+    all_distances     = distances
+  )
+
+  cat(paste0("  Genes with peak within 1 Mb: ", n_genes_with_peak,
+             " (", round(pct_with_peak, 2), "%)\n"))
+  cat(paste0("  Average distance: ", round(avg_distance, 2), " bp\n"))
+  cat(paste0("  Median distance: ", round(median_distance, 2), " bp\n\n"))
+}
+
+summary_peak_top25_table <- data.frame(
+  Cluster            = 1:optimal_k,
+  N_Genes            = sapply(cluster_peak_top25_analysis, function(x) x$n_genes_total),
+  N_With_Peak        = sapply(cluster_peak_top25_analysis, function(x) x$n_genes_with_peak),
+  Percent_With_Peak  = sapply(cluster_peak_top25_analysis, function(x) round(x$pct_with_peak, 2)),
+  Avg_Distance_bp    = sapply(cluster_peak_top25_analysis, function(x) round(x$avg_distance, 2)),
+  Median_Distance_bp = sapply(cluster_peak_top25_analysis, function(x) round(x$median_distance, 2))
+)
+
+cat("\n=== SUMMARY TABLE (Top25 peaks) ===\n")
+print(summary_peak_top25_table)
+
+write.table(
+  summary_peak_top25_table,
+  file.path(clusters_dir, "Top25_ChIP_peak_TSS_analysis_summary.tsv"),
+  sep = "\t", row.names = FALSE, quote = FALSE
+)
+cat("Top25 ChIP peak TSS analysis summary saved to Clusters/\n")
+
+# Statistical tests
+cat("\n=== STATISTICAL TESTS (Top25 peaks) ===\n\n")
+contingency_top25 <- matrix(
+  c(summary_peak_top25_table$N_With_Peak,
+    summary_peak_top25_table$N_Genes - summary_peak_top25_table$N_With_Peak),
+  nrow = optimal_k
+)
+chi_test_top25 <- chisq.test(contingency_top25)
+cat("Chi-square test for differences in peak association across clusters:\n")
+print(chi_test_top25)
+
+all_distances_top25_list <- lapply(cluster_peak_top25_analysis, function(x) x$distances)
+names(all_distances_top25_list) <- paste0("Cluster_", 1:optimal_k)
+
+distance_top25_df <- data.frame(
+  distance = unlist(all_distances_top25_list),
+  cluster  = factor(rep(names(all_distances_top25_list),
+                        sapply(all_distances_top25_list, length)))
+)
+
+kw_test_top25 <- kruskal.test(distance ~ cluster, data = distance_top25_df)
+cat("Kruskal-Wallis test for differences in peak-TSS distances:\n")
+print(kw_test_top25)
+
+if (kw_test_top25$p.value < 0.05) {
+  cat("Performing pairwise Wilcoxon tests (Bonferroni correction):\n")
+  pairwise_test_top25 <- pairwise.wilcox.test(
+    distance_top25_df$distance, distance_top25_df$cluster,
+    p.adjust.method = "bonferroni"
+  )
+  print(pairwise_test_top25)
+}
+
+# Plots
+p_bar_top25 <- ggplot(summary_peak_top25_table,
+                aes(x = factor(Cluster), y = Percent_With_Peak, fill = factor(Cluster))) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(round(Percent_With_Peak, 1), "%")), vjust = -0.5, size = 4) +
+  scale_fill_brewer(palette = "Set3") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(title = "Percentage of Genes with Top25 E2A-PBX1 Peaks within 1 Mb of TSS",
+       x = "Cluster", y = "Percentage of Genes (%)")
+print(p_bar_top25)
+ggsave(file.path(clusters_dir, "Top25_ChIP_pct_genes_with_peak.pdf"),
+       p_bar_top25, width = 8, height = 6)
+
+library(ggpubr)
+p_box_top25 <- ggplot(distance_top25_df,
+                      aes(x = cluster, y = distance / 1000, fill = cluster)) +
+  geom_boxplot(outlier.size = 0.5) +
+  scale_fill_brewer(palette = "Set3") +
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Distribution of Top25 Peak-TSS Distances by Cluster",
+       subtitle = "Only genes with peaks within 1 Mb",
+       x = "Cluster", y = "Distance to Nearest Peak (kb)") +
+  stat_compare_means(method = "kruskal.test",
+                     label.y = max(distance_top25_df$distance / 1000) * 0.95)
+print(p_box_top25)
+ggsave(file.path(clusters_dir, "Top25_ChIP_peak_TSS_distance_boxplot.pdf"),
+       p_box_top25, width = 8, height = 6)
+
+p_violin_top25 <- ggplot(distance_top25_df,
+                         aes(x = cluster, y = distance / 1000, fill = cluster)) +
+  geom_violin(alpha = 0.6, trim = FALSE) +
+  geom_boxplot(width = 0.15, outlier.shape = NA, alpha = 0.8) +
+  scale_fill_brewer(palette = "Set3") +
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Top25 Peak-TSS Distance Distribution by Cluster",
+       x = "Cluster", y = "Distance to Nearest Peak (kb)")
+print(p_violin_top25)
+ggsave(file.path(clusters_dir, "Top25_ChIP_peak_TSS_distance_violin.pdf"),
+       p_violin_top25, width = 8, height = 6)
+
+cat("\n=== TOP25 CHIP ANALYSIS COMPLETE — plots saved to Clusters/ ===\n")
+```
+
 ```{r HOMER Motif Analysis Preparation}
 cat("\n=== PREPARING DATA FOR HOMER MOTIF ANALYSIS ===\n\n")
 
@@ -1743,6 +1905,358 @@ if (nrow(tf_peaks_family_combined) > 0) {
 }
 
 cat("\n=== ChIP PEAK MOTIF VISUALIZATIONS COMPLETE — saved to Clusters/homer_chip_motifs/ ===\n\n")
+```
+
+```{r Top25 HOMER Motif Analysis on ChIP Peaks Near Cluster TSS, fig.width=10, fig.height=8}
+
+cat("\n=== TOP25 HOMER MOTIF ANALYSIS: ChIP PEAKS NEAR CLUSTER TSS ===\n\n")
+
+library(GenomicRanges)
+
+# Dedicated sub-folder for top25 chip homer output
+homer_chip_top25_dir <- file.path(clusters_dir, "homer_chip_top25_motifs")
+if (!dir.exists(homer_chip_top25_dir)) dir.create(homer_chip_top25_dir, recursive = TRUE)
+
+cat(paste0("Distance threshold: ", format(max_distance, big.mark = ","), " bp\n"))
+cat(paste0("Output directory: ", homer_chip_top25_dir, "\n\n"))
+
+# STEP 1: Extract peaks near TSS for each cluster
+cat("=== STEP 1: Extracting cluster-specific top25 ChIP peaks ===\n\n")
+
+cluster_peak_top25_indices <- list()
+
+for (k in 1:optimal_k) {
+  cat(paste0("Processing Cluster ", k, "...\n"))
+  cluster_genes    <- names(clusters)[clusters == k]
+  cluster_tss      <- tss_gr[tss_gr$symbol %in% cluster_genes]
+
+  cat(paste0("  Genes in cluster: ", length(cluster_genes), "\n"))
+  cat(paste0("  Genes with TSS:   ", length(cluster_tss), "\n"))
+
+  hits             <- distanceToNearest(cluster_tss, peaks_top25_gr, ignore.strand = TRUE)
+  within_threshold <- mcols(hits)$distance <= max_distance
+  hits_filtered    <- hits[within_threshold]
+  near_peak_idx    <- unique(subjectHits(hits_filtered))
+  cluster_peak_top25_indices[[k]] <- near_peak_idx
+
+  cat(paste0("  TSS within ", format(max_distance, big.mark = ","), " bp of a peak: ",
+             sum(within_threshold), "\n"))
+  cat(paste0("  Unique peaks selected: ", length(near_peak_idx), "\n\n"))
+}
+
+# STEP 2: Write per-cluster peak BED files
+cat("=== STEP 2: Writing cluster top25 peak BED files ===\n\n")
+
+for (k in 1:optimal_k) {
+  idx              <- cluster_peak_top25_indices[[k]]
+  cluster_peaks_gr <- peaks_top25_gr[idx]
+  bed_df           <- peaks_to_bed(cluster_peaks_gr)   # reuse helper from original chunk
+  bed_file         <- file.path(homer_chip_top25_dir,
+                                paste0("cluster_", k, "_chip_top25_peaks.bed"))
+  write.table(bed_df, bed_file, sep = "\t", quote = FALSE,
+              row.names = FALSE, col.names = FALSE)
+  cat(paste0("Cluster ", k, ": ", nrow(bed_df), " peaks -> ", basename(bed_file), "\n"))
+}
+
+# STEP 3: Background BED files
+cat("\n=== STEP 3: Building background BED files ===\n\n")
+
+all_top25_peaks_bed <- peaks_to_bed(peaks_top25_gr)
+bg_all_top25_file   <- file.path(homer_chip_top25_dir, "background_all_chip_top25_peaks.bed")
+write.table(all_top25_peaks_bed, bg_all_top25_file, sep = "\t", quote = FALSE,
+            row.names = FALSE, col.names = FALSE)
+cat(paste0("Background A (all top25 peaks): ", nrow(all_top25_peaks_bed), " peaks\n"))
+
+all_deg_genes_bgc_t25 <- rownames(mat_all_deg_scaled)
+all_deg_tss_t25       <- tss_gr[tss_gr$symbol %in% all_deg_genes_bgc_t25]
+hits_all_deg_t25      <- distanceToNearest(all_deg_tss_t25, peaks_top25_gr, ignore.strand = TRUE)
+within_all_deg_t25    <- mcols(hits_all_deg_t25)$distance <= max_distance
+near_deg_idx_t25      <- unique(subjectHits(hits_all_deg_t25[within_all_deg_t25]))
+
+deg_top25_peaks_bed <- peaks_to_bed(peaks_top25_gr[near_deg_idx_t25])
+bg_deg_top25_file   <- file.path(homer_chip_top25_dir,
+                                  "background_deg_chip_top25_peaks.bed")
+write.table(deg_top25_peaks_bed, bg_deg_top25_file, sep = "\t", quote = FALSE,
+            row.names = FALSE, col.names = FALSE)
+cat(paste0("Background B (top25 peaks near any DEG TSS): ",
+           nrow(deg_top25_peaks_bed), " peaks\n"))
+
+# STEP 4: Overlap summary
+cat("\n=== STEP 4: Peak overlap summary across clusters ===\n\n")
+
+overlap_top25_summary <- data.frame(
+  Cluster          = 1:optimal_k,
+  N_Peaks_Selected = sapply(cluster_peak_top25_indices, length),
+  Pct_Of_AllPeaks  = round(sapply(cluster_peak_top25_indices, length) /
+                             length(peaks_top25_gr) * 100, 2)
+)
+
+jaccard_top25_mat <- matrix(NA, nrow = optimal_k, ncol = optimal_k,
+                             dimnames = list(paste0("C", 1:optimal_k),
+                                            paste0("C", 1:optimal_k)))
+for (i in 1:optimal_k)
+  for (j in 1:optimal_k)
+    jaccard_top25_mat[i, j] <- round(
+      jaccard(cluster_peak_top25_indices[[i]], cluster_peak_top25_indices[[j]]), 3
+    )
+
+cat("Top25 peaks selected per cluster:\n"); print(overlap_top25_summary)
+cat("\nJaccard similarity between cluster top25 peak sets:\n"); print(jaccard_top25_mat)
+
+write.table(overlap_top25_summary,
+  file.path(homer_chip_top25_dir, "cluster_chip_top25_peak_overlap_summary.tsv"),
+  sep = "\t", row.names = FALSE, quote = FALSE)
+
+# Print HOMER commands
+cat("\n", strrep("=", 80), "\n", sep = "")
+cat("HOMER COMMANDS for top25 peaks (run from terminal):\n")
+cat(strrep("=", 80), "\n\n")
+cat(paste0("cd ", homer_chip_top25_dir, "\n\n"))
+cat("# RECOMMENDED: cluster top25 peaks vs. DEG background\n")
+for (k in 1:optimal_k) {
+  cat(sprintf(
+    "findMotifsGenome.pl cluster_%d_chip_top25_peaks.bed hg38 cluster_%d_chip_top25_DEGbg -size given -mask -bg background_deg_chip_top25_peaks.bed -p 4\n",
+    k, k))
+}
+cat("\n# ALTERNATIVE: cluster top25 peaks vs. all top25 ChIP peaks\n")
+for (k in 1:optimal_k) {
+  cat(sprintf(
+    "findMotifsGenome.pl cluster_%d_chip_top25_peaks.bed hg38 cluster_%d_top25_chip_DEGbg -size given -mask -bg background_all_chip_top25_peaks.bed -p 4\n",
+    k, k))
+}
+cat("\n=== TOP25 ChIP PEAK HOMER INPUT PREPARATION COMPLETE ===\n")
+cat(paste0("BED files saved to: ", homer_chip_top25_dir, "\n\n"))
+```
+```{r HOMER Top25 ChIP Peak Motif Visualizations, fig.width=12, fig.height=10}
+
+cat("\n=== HOMER TOP25 ChIP PEAK MOTIF VISUALIZATIONS ===\n\n")
+
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(tidyr)
+library(pheatmap)
+
+homer_top25_results_list <- list()
+
+for (k in 1:optimal_k) {
+  file_path <- file.path(homer_chip_top25_dir,
+                         paste0("cluster_", k, "_top25_chip_DEGbg/knownResults.txt"))
+  if (file.exists(file_path)) {
+    df <- read_tsv(file_path, comment = "#")
+    df$Cluster <- k
+    
+    # Identify the % of Target Sequences column by name pattern
+    pct_col <- grep("% of Target Sequences with Motif", colnames(df), value = TRUE)[1]
+    if (!is.na(pct_col)) {
+      df$Percent_Target <- as.numeric(gsub("%", "", df[[pct_col]]))
+    } else {
+      df$Percent_Target <- NA
+    }
+    
+    homer_top25_results_list[[k]] <- df
+    cat(paste0("Loaded cluster ", k, ": ", nrow(df), " motifs\n"))
+  } else {
+    cat(paste0("WARNING: File not found for cluster ", k, ": ", file_path, "\n"))
+  }
+}
+
+if (length(homer_top25_results_list) == 0) {
+  stop("No HOMER top25 ChIP peak results found. Run HOMER first.")
+}
+
+homer_top25_combined <- bind_rows(homer_top25_results_list) %>%
+  mutate(Motif_Clean = trimws(gsub("\\(.*", "", `Motif Name`)))
+
+cat(paste0("Total motif-cluster rows: ", nrow(homer_top25_combined), "\n"))
+
+# ----------------------------------------------------------------------------
+# 1. Heatmap — top 40 most significant motifs
+# ----------------------------------------------------------------------------
+significant_motifs_top25 <- homer_top25_combined %>%
+  filter(`P-value` < 0.05) %>%
+  group_by(Motif_Clean) %>%
+  summarise(min_pval = min(`P-value`), n_clusters_sig = n(), .groups = "drop") %>%
+  arrange(min_pval) %>%
+  head(40) %>%
+  pull(Motif_Clean)
+
+if (length(significant_motifs_top25) > 0) {
+  motif_matrix_top25 <- homer_top25_combined %>%
+    filter(Motif_Clean %in% significant_motifs_top25) %>%
+    group_by(Motif_Clean, Cluster) %>%
+    slice_min(`P-value`, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    mutate(neg_log_p = pmin(-log10(`P-value`), 50)) %>%
+    select(Motif_Clean, Cluster, neg_log_p) %>%
+    pivot_wider(names_from = Cluster, values_from = neg_log_p, values_fill = 0)
+
+  motif_mat_top25_df <- as.data.frame(motif_matrix_top25)
+  rownames(motif_mat_top25_df) <- motif_mat_top25_df$Motif_Clean
+  motif_mat_top25_df$Motif_Clean <- NULL
+  motif_mat_top25_final <- as.matrix(motif_mat_top25_df)
+  motif_mat_top25_final <- motif_mat_top25_final[,
+    order(as.numeric(colnames(motif_mat_top25_final)))]
+
+  pdf(file.path(homer_chip_top25_dir, "motif_heatmap_chip_top25_peaks.pdf"),
+      width = 12, height = 14)
+  pheatmap(motif_mat_top25_final,
+    cluster_rows = TRUE, cluster_cols = FALSE,
+    color = colorRampPalette(c("white", "yellow", "orange", "red", "darkred"))(100),
+    main = "Top Enriched Motifs in Top25 ChIP Peaks Across Clusters\n(-log10 P-value, only p < 0.05)",
+    display_numbers = FALSE, fontsize_row = 7, fontsize_col = 11,
+    angle_col = 0, border_color = "grey90", cellwidth = 35, cellheight = 10,
+    breaks = seq(0, max(motif_mat_top25_final), length.out = 101))
+  dev.off()
+
+  pheatmap(motif_mat_top25_final,
+    cluster_rows = TRUE, cluster_cols = FALSE,
+    color = colorRampPalette(c("white", "yellow", "orange", "red", "darkred"))(100),
+    main = "Top Enriched Motifs in Top25 ChIP Peaks Across Clusters\n(-log10 P-value, only p < 0.05)",
+    display_numbers = FALSE, fontsize_row = 7, fontsize_col = 11,
+    angle_col = 0, border_color = "grey90", cellwidth = 35, cellheight = 10,
+    breaks = seq(0, max(motif_mat_top25_final), length.out = 101))
+} else {
+  cat("No significant motifs (p < 0.05) found across any cluster for top25 peaks.\n")
+}
+
+# ----------------------------------------------------------------------------
+# 2. Dot plot — top 10 motifs per cluster
+# ----------------------------------------------------------------------------
+top_motifs_top25 <- homer_top25_combined %>%
+  group_by(Cluster) %>%
+  arrange(`P-value`) %>%
+  slice_head(n = 10) %>%
+  ungroup() %>%
+  group_by(Motif_Clean, Cluster) %>%
+  slice_min(`P-value`, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+p_top25_dot <- ggplot(top_motifs_top25,
+                      aes(x = factor(Cluster), y = Motif_Clean)) +
+  geom_point(aes(size  = -log10(`P-value`),
+                 color = -log10(`P-value`),
+                 alpha = ifelse(`P-value` < 0.05, 1, 0.3))) +
+  scale_size_continuous(range = c(1, 10), name = "-log10(P-value)") +
+  scale_color_gradient(low = "lightblue", high = "darkred",
+                       name = "-log10(P-value)") +
+  scale_alpha_identity() +
+  theme_bw() +
+  labs(title = "Top 10 Motifs Per Cluster — Top25 ChIP Peaks (Dot Plot)",
+       x = "Cluster", y = "Motif")
+print(p_top25_dot)
+ggsave(file.path(homer_chip_top25_dir, "motif_dotplot_chip_top25_peaks.pdf"),
+       p_top25_dot, width = 12, height = 10)
+
+# ----------------------------------------------------------------------------
+# 3. Enrichment summary bar — significant motif counts per cluster
+# ----------------------------------------------------------------------------
+cluster_top25_enrichment_stats <- homer_top25_combined %>%
+  group_by(Cluster) %>%
+  summarise(
+    n_significant      = sum(`P-value` < 0.05),
+    n_very_significant = sum(`P-value` < 0.001),
+    median_pval        = median(`P-value`),
+    min_pval           = min(`P-value`),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(n_significant))
+print(cluster_top25_enrichment_stats)
+
+p_top25_cluster_summary <- ggplot(cluster_top25_enrichment_stats,
+  aes(x = factor(Cluster), y = n_significant, fill = factor(Cluster))) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = n_significant), vjust = -0.5, size = 5, fontface = "bold") +
+  scale_fill_brewer(palette = "Set3") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(title = "Significant Motifs per Cluster — Top25 ChIP Peaks",
+       subtitle = "Count of motifs with p < 0.05",
+       x = "Cluster", y = "Number of Significant Motifs")
+print(p_top25_cluster_summary)
+ggsave(file.path(homer_chip_top25_dir,
+                 "motif_sig_count_per_cluster_chip_top25_peaks.pdf"),
+       p_top25_cluster_summary, width = 8, height = 6)
+
+# ----------------------------------------------------------------------------
+# 4. TF-family heatmap and dot plot
+#    Reuses tf_families list defined in "TF-family-plots promoters"
+# ----------------------------------------------------------------------------
+tf_top25_family_enrichment <- list()
+
+for (family_name in names(tf_families)) {
+  patterns <- tf_families[[family_name]]
+  family_results <- homer_top25_combined %>%
+    filter(grepl(paste(patterns, collapse = "|"), Motif_Clean, ignore.case = TRUE)) %>%
+    group_by(Cluster, Motif_Clean) %>%
+    slice_min(`P-value`, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    mutate(TF_Family  = family_name,
+           neg_log_p  = -log10(`P-value`))
+  tf_top25_family_enrichment[[family_name]] <- family_results
+}
+
+tf_top25_family_combined <- bind_rows(tf_top25_family_enrichment)
+
+tf_top25_heatmap_plot <- NULL
+tf_top25_dot_plot     <- NULL
+
+if (nrow(tf_top25_family_combined) > 0) {
+
+  tf_top25_summary <- tf_top25_family_combined %>%
+    group_by(TF_Family, Cluster) %>%
+    summarise(max_neg_log_p = max(neg_log_p), .groups = "drop") %>%
+    pivot_wider(names_from  = Cluster,
+                values_from = max_neg_log_p,
+                values_fill = 0)
+
+  tf_top25_mat <- as.data.frame(tf_top25_summary)
+  rownames(tf_top25_mat) <- tf_top25_mat$TF_Family
+  tf_top25_mat$TF_Family <- NULL
+  tf_top25_mat <- as.matrix(tf_top25_mat)
+
+  pheatmap(tf_top25_mat,
+    cluster_rows = FALSE, cluster_cols = FALSE,
+    color = colorRampPalette(c("white", "pink", "red", "darkred"))(100),
+    main = "TF Family Enrichment in Top25 ChIP Peaks Across Clusters\n(Max -log10 P-value per family)",
+    filename = file.path(homer_chip_top25_dir,
+                         "TF_family_heatmap_chip_top25_peaks.pdf"),
+    display_numbers = TRUE, number_format = "%.1f",
+    fontsize = 11, angle_col = 0,
+    cellwidth = 40, cellheight = 30)
+
+  tf_top25_heatmap_plot <- pheatmap(tf_top25_mat,
+    cluster_rows = FALSE, cluster_cols = FALSE,
+    color = colorRampPalette(c("white", "pink", "red", "darkred"))(100),
+    main = "TF Family Enrichment in Top25 ChIP Peaks Across Clusters\n(Max -log10 P-value per family)",
+    display_numbers = TRUE, number_format = "%.1f",
+    fontsize = 11, angle_col = 0,
+    cellwidth = 40, cellheight = 30)
+
+  tf_top25_sig <- tf_top25_family_combined %>% filter(`P-value` < 0.05)
+
+  if (nrow(tf_top25_sig) > 0) {
+    tf_top25_dot_plot <- ggplot(tf_top25_sig,
+                                aes(x = factor(Cluster), y = TF_Family)) +
+      geom_point(aes(size = neg_log_p, color = neg_log_p)) +
+      scale_size_continuous(range = c(2, 12), name = "-log10(P)") +
+      scale_color_gradient(low = "lightblue", high = "darkred",
+                           name = "-log10(P)") +
+      theme_bw() +
+      labs(title = "TF Family Enrichment in Top25 ChIP Peaks by Cluster",
+           subtitle = "Only showing p < 0.05",
+           x = "Cluster", y = "TF Family")
+
+    ggsave(file.path(homer_chip_top25_dir,
+                     "TF_family_dotplot_chip_top25_peaks.pdf"),
+           tf_top25_dot_plot, width = 8, height = 6)
+  }
+}
+
+if (!is.null(tf_top25_heatmap_plot)) tf_top25_heatmap_plot
+if (!is.null(tf_top25_dot_plot))     print(tf_top25_dot_plot)
+
+cat("\n=== TOP25 ChIP PEAK MOTIF VISUALIZATIONS COMPLETE — saved to Clusters/homer_chip_top25_motifs/ ===\n\n")
 ```
 
 ```{r Loop Anchor Gene Analysis, fig.width=12, fig.height=8}
