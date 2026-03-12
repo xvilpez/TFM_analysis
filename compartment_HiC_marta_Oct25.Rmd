@@ -21,7 +21,9 @@ knitr::opts_chunk$set(
   message = FALSE,
   fig.align = "center"
 )
-knitr::opts_knit$set(root.dir = "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore")
+# knitr::opts_knit$set(root.dir = "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore")
+knitr::opts_knit$set(root.dir = "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore")
+
 ```
 
 ---
@@ -78,7 +80,8 @@ All bedgraph files are loaded from the cscore iteration trial directory.
 Each file contains four columns: `chr`, `start`, `end`, and the cscore `score`.
 
 ```{r load-data}
-data_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore"
+# data_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore"
+data_dir <-"/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore"
 
 read_cscore <- function(filename, score_colname) {
   read.table(file.path(data_dir, filename),
@@ -1056,16 +1059,18 @@ library(tidyr)
 # ----------------------------------------------------------------------------
 # Load ChIP-seq peaks BED
 # ----------------------------------------------------------------------------
-peaks_bed <- read.table("R:/R_STIK/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed",
+peaks_bed <- read.table("/ijc/LABS/STIK/RAW/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed",
                         sep       = "\t",
                         header    = FALSE,
                         col.names = c("chrom", "start", "end")
                         [1:ncol(read.table(
-                        "R:/R_STIK/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed",
+                        "/ijc/LABS/STIK/RAW/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed",
                         sep = "\t", nrows = 1))]) %>%
   select(chrom = 1, start = 2, end = 3) %>%
   mutate(start = as.integer(start),
          end   = as.integer(end))
+
+###Put "R:/R_STIK/" or "/ijc/LABS/STIK/RAW" depending on the root structure
 
 peaks_gr <- makeGRangesFromDataFrame(peaks_bed,
                                      seqnames.field = "chrom",
@@ -1308,6 +1313,254 @@ cscore_EP1_box <- ggplot(box_df, aes(x = Condition, y = cscore, fill = fill_grou
   labs(title = "cscore distribution – bins overlapping E2A-PBX1 peaks vs non-overlapping")
 print(cscore_EP1_box)
 ggsave(file.path(plots_dir, "EP1_overlap_cscore.pdf"), cscore_EP1_box, width = 10, height = 6)
+```
+```{r ChIP-Seq intersection Top25}
+# ============================================================================
+# Intersection of switching compartments with Top25 ChIP-seq peaks
+# ============================================================================
+library(GenomicRanges)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# ----------------------------------------------------------------------------
+# Load Top25 ChIP-seq peaks BED
+# ----------------------------------------------------------------------------
+peaks_top25_bed <- read.table(
+  "/mnt/beegfs/xvilchez/chip_publicdata/top25_697HF_E2APBX1-HF_peaks.bed",
+  sep    = "\t",
+  header = FALSE
+) %>%
+  select(chrom = 1, start = 2, end = 3) %>%
+  mutate(start = as.integer(start),
+         end   = as.integer(end))
+
+peaks_top25_gr <- makeGRangesFromDataFrame(peaks_top25_bed,
+                                           seqnames.field = "chrom",
+                                           start.field    = "start",
+                                           end.field      = "end")
+
+cat("Total top25 peaks loaded:", length(peaks_top25_gr), "\n")
+
+# ----------------------------------------------------------------------------
+# Overlap top25 peaks with every switching class
+# ----------------------------------------------------------------------------
+overlap_top25_counts <- lapply(all_switching_levels, function(sw) {
+
+  bins <- cs_REH_merge %>%
+    filter(switching == sw) %>%
+    select(chrom = chr, start, end) %>%
+    mutate(start = as.integer(start),
+           end   = as.integer(end))
+
+  bins_gr <- makeGRangesFromDataFrame(bins,
+                                      seqnames.field = "chrom",
+                                      start.field    = "start",
+                                      end.field      = "end")
+
+  n_bins      <- length(bins_gr)
+  n_overlap   <- length(unique(queryHits(findOverlaps(bins_gr, peaks_top25_gr))))
+  pct_overlap <- n_overlap / n_bins * 100
+
+  data.frame(switching   = sw,
+             n_bins      = n_bins,
+             n_overlap   = n_overlap,
+             pct_overlap = pct_overlap)
+}) %>% bind_rows()
+
+# ----------------------------------------------------------------------------
+# Background: all bins (same as original)
+# ----------------------------------------------------------------------------
+constitutive_top25_counts <- overlap_top25_counts %>%
+  summarise(n_bins    = sum(n_bins),
+            n_overlap = sum(n_overlap))
+
+bg_top25_bins_with    <- constitutive_top25_counts$n_overlap
+bg_top25_bins_without <- constitutive_top25_counts$n_bins - constitutive_top25_counts$n_overlap
+background_top25_pct  <- bg_top25_bins_with / constitutive_top25_counts$n_bins * 100
+
+cat(sprintf("Top25 background: %d bins, %d with peak (%.2f%%)\n",
+            constitutive_top25_counts$n_bins,
+            bg_top25_bins_with,
+            background_top25_pct))
+
+# ----------------------------------------------------------------------------
+# Fisher's exact test for each switching class vs background
+# ----------------------------------------------------------------------------
+fisher_top25_results <- lapply(all_switching_levels, function(sw) {
+
+  sw_row     <- overlap_top25_counts %>% filter(switching == sw)
+  sw_with    <- sw_row$n_overlap
+  sw_without <- sw_row$n_bins - sw_row$n_overlap
+
+  ct <- matrix(c(sw_with,              sw_without,
+                 bg_top25_bins_with,   bg_top25_bins_without),
+               nrow = 2, byrow = TRUE,
+               dimnames = list(c("Switching", "Background"),
+                               c("Peak", "No_Peak")))
+
+  ft <- fisher.test(ct, alternative = "two.sided")
+
+  data.frame(
+    switching   = sw,
+    n_bins      = sw_row$n_bins,
+    n_overlap   = sw_with,
+    pct_overlap = sw_row$pct_overlap,
+    OR          = ft$estimate,
+    CI_low      = ft$conf.int[1],
+    CI_high     = ft$conf.int[2],
+    p_value     = ft$p.value
+  )
+}) %>% bind_rows()
+
+fisher_top25_results <- fisher_top25_results %>%
+  mutate(
+    p_adj           = p.adjust(p_value, method = "BH"),
+    significance    = case_when(
+      p_adj < 0.001 ~ "***",
+      p_adj < 0.01  ~ "**",
+      p_adj < 0.05  ~ "*",
+      TRUE          ~ "ns"
+    ),
+    fold_enrichment = pct_overlap / background_top25_pct,
+    switching       = factor(switching, levels = all_switching_levels)
+  )
+
+print(fisher_top25_results[, c("switching", "n_bins", "n_overlap",
+                                "pct_overlap", "fold_enrichment",
+                                "OR", "CI_low", "CI_high",
+                                "p_value", "p_adj", "significance")])
+
+overlap_top25_counts <- overlap_top25_counts %>%
+  mutate(
+    fold_enrichment = pct_overlap / background_top25_pct,
+    switching       = factor(switching, levels = all_switching_levels)
+  )
+
+# ----------------------------------------------------------------------------
+# Annotate each bin with top25 peak overlap for boxplot
+# ----------------------------------------------------------------------------
+cs_REH_merge <- cs_REH_merge %>%
+  mutate(
+    peak_top25_overlap = ifelse(
+      countOverlaps(all_bins_gr, peaks_top25_gr) > 0, "Peak", "No peak"
+    )
+  )
+
+# ----------------------------------------------------------------------------
+# Plot 1 — Polar enrichment plot
+# ----------------------------------------------------------------------------
+overlap_top25_polar <- ggplot(overlap_top25_counts,
+                              aes(x = switching, y = fold_enrichment,
+                                  fill = switching)) +
+  geom_col(color = "black", linewidth = 0.4, width = 0.85) +
+  geom_hline(yintercept = 1, linetype = "dashed",
+             color = "gray40", linewidth = 0.5) +
+  coord_polar() +
+  scale_fill_manual(values = switching_colors,
+                    name   = "Switching\n(REH_EP1_EP1Aro)") +
+  scale_y_continuous(
+    limits = c(0, max(overlap_top25_counts$fold_enrichment) * 1.2)
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x  = element_text(size = 8, face = "bold"),
+    axis.text.y  = element_text(size = 8),
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(size = 11),
+    plot.title   = element_text(hjust = 0.5, face = "bold", size = 13),
+    panel.grid   = element_line(color = "gray85", linetype = "dashed"),
+    legend.title = element_text(face = "bold")
+  ) +
+  ylab("Fold Enrichment over background") +
+  labs(title = "Top25 E2A-PBX1 peak enrichment per compartment switching class\n(REH_EP1_EP1Aro)")
+print(overlap_top25_polar)
+ggsave(file.path(plots_dir, "EP1_top25_overlap_polar.pdf"),
+       overlap_top25_polar, width = 10, height = 6)
+
+# ----------------------------------------------------------------------------
+# Plot 2 — Forest plot
+# ----------------------------------------------------------------------------
+forest_top25_plot <- ggplot(fisher_top25_results,
+                            aes(x = OR, y = switching, color = switching)) +
+  geom_vline(xintercept = 1, linetype = "dashed",
+             color = "gray40", linewidth = 0.5) +
+  geom_errorbarh(aes(xmin = CI_low, xmax = CI_high),
+                 height = 0.25, linewidth = 0.7) +
+  geom_point(size = 3.5) +
+  geom_text(aes(label = significance, x = CI_high),
+            hjust = -0.4, size = 5, color = "black") +
+  scale_color_manual(values = switching_colors,
+                     name   = "Switching class") +
+  scale_x_log10() +
+  theme_bw() +
+  theme(
+    axis.text.y        = element_text(size = 11, face = "bold"),
+    axis.text.x        = element_text(size = 10),
+    axis.title         = element_text(size = 12),
+    plot.title         = element_text(hjust = 0.5, face = "bold", size = 13),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor   = element_blank(),
+    legend.position    = "none"
+  ) +
+  xlab("Odds Ratio (log scale) vs background") +
+  ylab("Switching class") +
+  labs(title = "Fisher's exact test: Top25 E2A-PBX1 peak enrichment\nvs all bins background")
+print(forest_top25_plot)
+ggsave(file.path(plots_dir, "EP1_top25_fisher_forest.pdf"),
+       forest_top25_plot, width = 8, height = 5)
+
+# ----------------------------------------------------------------------------
+# Plot 3 — Boxplot: cscore per condition, faceted by top25 peak overlap
+# ----------------------------------------------------------------------------
+box_top25_df <- cs_REH_merge %>%
+  select(peak_top25_overlap,
+         REH     = score_REH,
+         EP1     = score_EP1_merge,
+         EP1_Aro = score_EP1_Aro_merge) %>%
+  pivot_longer(cols      = c(REH, EP1, EP1_Aro),
+               names_to  = "Condition",
+               values_to = "cscore") %>%
+  mutate(
+    Condition          = factor(Condition, levels = c("REH", "EP1", "EP1_Aro")),
+    peak_top25_overlap = factor(peak_top25_overlap, levels = c("Peak", "No peak")),
+    fill_group         = ifelse(peak_top25_overlap == "Peak",
+                                as.character(Condition), "No peak")
+  )
+
+cscore_top25_box <- ggplot(box_top25_df,
+                           aes(x = Condition, y = cscore, fill = fill_group)) +
+  geom_boxplot(outlier.size  = 0.3,
+               outlier.alpha = 0.3,
+               linewidth     = 0.45,
+               alpha         = 0.9) +
+  geom_hline(yintercept = 0, linetype = "dashed",
+             color = "gray30", linewidth = 0.4) +
+  facet_wrap(~ peak_top25_overlap, nrow = 1) +
+  scale_fill_manual(values = fill_colors,
+                    breaks = names(cond_colors),
+                    name   = "Condition") +
+  scale_y_continuous(limits = c(-1, 1),
+                     breaks = c(-1, -0.5, 0, 0.5, 1)) +
+  theme_bw() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    axis.text.x        = element_text(size = 11, angle = 30,
+                                      hjust = 1, face = "bold"),
+    axis.text.y        = element_text(size = 10),
+    axis.title         = element_text(size = 13),
+    strip.text         = element_text(size = 12, face = "bold"),
+    strip.background   = element_rect(fill = "gray92", color = "black"),
+    plot.title         = element_text(hjust = 0.5, face = "bold", size = 13),
+    legend.title       = element_text(face = "bold", size = 10),
+    legend.text        = element_text(size = 9)
+  ) +
+  xlab("Condition") + ylab("cscore") +
+  labs(title = "cscore distribution – bins overlapping Top25 E2A-PBX1 peaks vs non-overlapping")
+print(cscore_top25_box)
+ggsave(file.path(plots_dir, "EP1_top25_overlap_cscore.pdf"),
+       cscore_top25_box, width = 10, height = 6)
 ```
 
 ---
