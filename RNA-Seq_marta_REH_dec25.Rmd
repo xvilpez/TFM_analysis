@@ -7,8 +7,8 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
-knitr::opts_knit$set(root.dir ="/ijc/LABS/STIK/RAW/rna_seq/rnaseq_marta_REHAro_dec25") ### If I run it through OnDemand server
-# knitr::opts_knit$set(root.dir = "R:/R_STIK/rna_seq/rnaseq_marta_REHAro_dec25") ### If I run it in the workstation
+# knitr::opts_knit$set(root.dir ="/ijc/LABS/STIK/RAW/rna_seq/rnaseq_marta_REHAro_dec25") ### If I run it through OnDemand server
+knitr::opts_knit$set(root.dir = "R:/R_STIK/rna_seq/rnaseq_marta_REHAro_dec25") ### If I run it in the workstation
 ```
 
 ```{r initialization, warning=FALSE, message=FALSE}
@@ -2262,9 +2262,9 @@ cat("\n=== TOP25 ChIP PEAK MOTIF VISUALIZATIONS COMPLETE — saved to Clusters/h
 ```{r Loop Anchor Gene Analysis, fig.width=12, fig.height=8}
 cat("\n=== LOOP ANCHOR GENE ANALYSIS ===\n\n")
 
-loop_dir <- "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/loops/intersected_loops/gene_intersection"
+# loop_dir <- "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/loops/intersected_loops/gene_intersection"
 
-# loop_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/loops/intersected_loops/gene_intersection"
+loop_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/loops/intersected_loops/gene_intersection"
 
 loop_files <- list(
   EP1_specific = list(
@@ -2457,24 +2457,18 @@ write.table(wilcox_results,
 # 7. y positions for significance labels
 # ----------------------------------------------------------------------------
 y_positions <- loop_counts %>%
-  group_by(loop_category) %>%
-  summarise(y95 = quantile(abs_log2_centered, 0.95, na.rm = TRUE), .groups = "drop")
+  group_by(loop_category, condition) %>%
+  summarise(y_max = max(abs_log2_centered, na.rm = TRUE), .groups = "drop")
 
 bracket_df <- wilcox_results %>%
-  left_join(y_positions, by = "loop_category") %>%
-  pivot_longer(
-    cols      = c(sig_EP1, sig_Aro),
-    names_to  = "which",
-    values_to = "sig"
-  ) %>%
+  pivot_longer(cols = c(sig_EP1, sig_Aro), names_to = "which", values_to = "sig") %>%
   filter(sig != "ns") %>%
   mutate(
-    condition = factor(
-      recode(which, "sig_EP1" = "EP1", "sig_Aro" = "Aro"),
-      levels = c("REH", "EP1", "Aro")
-    ),
-    y_pos = ifelse(condition == "EP1", y95 + 0.2, y95 + 0.5)
-  )
+    condition = factor(recode(which, "sig_EP1" = "EP1", "sig_Aro" = "Aro"),
+                       levels = c("REH", "EP1", "Aro"))
+  ) %>%
+  left_join(y_positions, by = c("loop_category", "condition")) %>%
+  mutate(y_pos = y_max * 1.08)
 
 # ----------------------------------------------------------------------------
 # 8. Color palettes
@@ -2560,20 +2554,18 @@ wilcox_type <- gene_means_type %>%
   )
 
 y_type <- gene_means_type %>%
-  group_by(loop_type) %>%
-  summarise(y95 = quantile(mean_log2, 0.95, na.rm = TRUE), .groups = "drop")
+  group_by(loop_type, condition) %>%
+  summarise(y_max = max(mean_log2, na.rm = TRUE), .groups = "drop")
 
 bracket_type <- wilcox_type %>%
-  left_join(y_type, by = "loop_type") %>%
   pivot_longer(c(sig_EP1, sig_Aro), names_to = "which", values_to = "sig") %>%
   filter(sig != "ns") %>%
   mutate(
-    condition = factor(
-      recode(which, "sig_EP1" = "EP1", "sig_Aro" = "Aro"),
-      levels = c("REH", "EP1", "Aro")
-    ),
-    y_pos = ifelse(condition == "EP1", y95 + 0.2, y95 + 0.5)
-  )
+    condition = factor(recode(which, "sig_EP1" = "EP1", "sig_Aro" = "Aro"),
+                       levels = c("REH", "EP1", "Aro"))
+  ) %>%
+  left_join(y_type, by = c("loop_type", "condition")) %>%
+  mutate(y_pos = y_max * 1.08)
 
 p2 <- ggplot(
   gene_means_type,
@@ -2613,8 +2605,8 @@ ggsave(file.path(loops_dir, "loop_anchor_abs_counts_violin_specific_vs_shared.pd
 ```
 
 ```{r Compartment intersection}
-# data <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore/Comp_Analysis/files/cs_REH_merge.tab"
-data <- "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore/Comp_Analysis/files/cs_REH_merge.tab"
+data <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore/Comp_Analysis/files/cs_REH_merge.tab"
+# data <- "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore/Comp_Analysis/files/cs_REH_merge.tab"
 
 cs_REH_merge <- read.table(data,
                             sep       = "\t",
@@ -2648,19 +2640,19 @@ bins_gr <- makeGRangesFromDataFrame(
 # ----------------------------------------------------------------------------
 # 2. Load gene annotation
 # ----------------------------------------------------------------------------
-# genes_bed <- read.table("R:/R_STIK/xavi_scripts/genes_gencode.v28.bed",
-#                         sep = "\t", header = FALSE,
-#                         col.names = c("chrom", "start", "end", "strand",
-#                                       "gene_name", "ID", "description")) %>%
-#   select(chrom, start, end, gene_name) %>%
-#   mutate(start = as.integer(start), end = as.integer(end))
-
-genes_bed <- read.table("/ijc/LABS/STIK/RAW/xavi_scripts/genes_gencode.v28.bed",
+genes_bed <- read.table("R:/R_STIK/xavi_scripts/genes_gencode.v28.bed",
                         sep = "\t", header = FALSE,
                         col.names = c("chrom", "start", "end", "strand",
                                       "gene_name", "ID", "description")) %>%
   select(chrom, start, end, gene_name) %>%
   mutate(start = as.integer(start), end = as.integer(end))
+
+# genes_bed <- read.table("/ijc/LABS/STIK/RAW/xavi_scripts/genes_gencode.v28.bed",
+#                         sep = "\t", header = FALSE,
+#                         col.names = c("chrom", "start", "end", "strand",
+#                                       "gene_name", "ID", "description")) %>%
+#   select(chrom, start, end, gene_name) %>%
+#   mutate(start = as.integer(start), end = as.integer(end))
 
 genes_gr <- makeGRangesFromDataFrame(genes_bed,
                                      seqnames.field     = "chrom",
@@ -2773,24 +2765,18 @@ write.table(wilcox_results,
 # 8. Significance labels positioned above EP1 and Aro per facet
 # ----------------------------------------------------------------------------
 y_positions <- counts_comp %>%
-  group_by(switching) %>%
-  summarise(y95 = quantile(log2_centered, 0.95, na.rm = TRUE), .groups = "drop")
+  group_by(switching, condition) %>%
+  summarise(y_max = max(log2_centered, na.rm = TRUE), .groups = "drop")
 
 bracket_df <- wilcox_results %>%
-  left_join(y_positions, by = "switching") %>%
-  pivot_longer(
-    cols      = c(sig_EP1, sig_Aro),
-    names_to  = "which",
-    values_to = "sig"
-  ) %>%
+  pivot_longer(cols = c(sig_EP1, sig_Aro), names_to = "which", values_to = "sig") %>%
   filter(sig != "ns") %>%
   mutate(
-    condition = factor(
-      recode(which, "sig_EP1" = "EP1", "sig_Aro" = "Aro"),
-      levels = c("REH", "EP1", "Aro")
-    ),
-    y_pos = ifelse(condition == "EP1", y95 + 0.2, y95 + 0.5)
-  )
+    condition = factor(recode(which, "sig_EP1" = "EP1", "sig_Aro" = "Aro"),
+                       levels = c("REH", "EP1", "Aro"))
+  ) %>%
+  left_join(y_positions, by = c("switching", "condition")) %>%
+  mutate(y_pos = y_max * 1.08)
 
 # ----------------------------------------------------------------------------
 # 9. Boxplot: condition on x-axis, faceted by switching class (all 8 classes)
