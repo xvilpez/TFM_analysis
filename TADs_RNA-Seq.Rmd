@@ -534,6 +534,16 @@ gene_means_tad <- counts_tad %>%
   group_by(dataset, tad_category, gene_name, condition) %>%
   summarise(mean_log2 = mean(log2_centered), .groups = "drop")
 
+sig_label <- function(p) {
+  dplyr::case_when(
+    is.na(p)  ~ "ns",
+    p < 0.001 ~ "***",
+    p < 0.01  ~ "**",
+    p < 0.05  ~ "*",
+    TRUE      ~ "ns"
+  )
+}
+
 wilcox_tad <- gene_means_tad %>%
   group_by(dataset, condition) %>%
   summarise(
@@ -637,4 +647,66 @@ p_tad <- ggplot(
 
 print(p_tad)
 ggsave("tad_boundary_counts_vs_shared_boxplot.pdf", p_tad, width = 12, height = 10)
+```
+
+```{r TAD Boundary TP Gene Lists}
+cat("\n=== GENE LISTS AT TP+ AND TP- BOUNDARIES ===\n\n")
+
+# ----------------------------------------------------------------------------
+# For each dataset, retrieve all genes overlapping TP+ and TP- boundaries
+# with their expression values in all conditions
+# ----------------------------------------------------------------------------
+
+tp_gene_lists <- list()
+
+for (ds in dataset_levels) {
+  for (cat in c("TP+", "TP-")) {
+    
+    label <- paste0(ds, "_", cat)
+    
+    # Wide format: one row per gene, one column per condition
+    genes_tp <- gene_means_tad %>%
+      filter(dataset == ds, tad_category == cat) %>%
+      pivot_wider(
+        id_cols     = c(dataset, tad_category, gene_name),
+        names_from  = condition,
+        values_from = mean_log2
+      ) %>%
+      arrange(gene_name)
+    
+    cat(paste0(label, ": ", nrow(genes_tp), " genes\n"))
+    tp_gene_lists[[label]] <- genes_tp
+    
+    write.table(
+      genes_tp,
+      paste0("genes_", label, ".tsv"),
+      sep = "\t", row.names = FALSE, quote = FALSE
+    )
+  }
+}
+
+# ----------------------------------------------------------------------------
+# Combined file: all TP+ and TP- genes across all datasets (long format)
+# ----------------------------------------------------------------------------
+tp_genes_combined <- gene_means_tad %>%
+  filter(tad_category %in% c("TP+", "TP-")) %>%
+  arrange(dataset, tad_category, gene_name)
+
+write.table(
+  tp_genes_combined,
+  "genes_TP_boundaries_all_datasets.tsv",
+  sep = "\t", row.names = FALSE, quote = FALSE
+)
+
+cat(paste0("\nTotal unique genes across TP+ and TP- (any dataset):\n"))
+tp_genes_combined %>%
+  distinct(dataset, tad_category, gene_name) %>%
+  dplyr::count(dataset, tad_category) %>%
+  print()
+
+cat("\nUnique gene symbols overlapping TP+ or TP- in at least one dataset:\n")
+tp_genes_combined %>%
+  distinct(gene_name) %>%
+  nrow() %>%
+  cat("\n")
 ```
