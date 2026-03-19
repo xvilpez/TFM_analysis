@@ -2385,19 +2385,18 @@ loop_counts <- bind_rows(loop_counts_list) %>%
   mutate(
     loop_category    = factor(loop_category, levels = names(loop_files)),
     loop_type        = factor(loop_type, levels = c("specific", "shared")),
-    abs_log2_centered = abs(log2_centered)   # <-- NEW
   )
 
 # ----------------------------------------------------------------------------
-# 5. Summary statistics  (log2_centered → abs_log2_centered)
+# 5. Summary statistics  (log2_centered)
 # ----------------------------------------------------------------------------
 summary_stats <- loop_counts %>%
   group_by(loop_category, loop_type, condition) %>%
   summarise(
     n_genes    = n_distinct(gene_name),
-    median_exp = median(abs_log2_centered, na.rm = TRUE),
-    mean_exp   = mean(abs_log2_centered,   na.rm = TRUE),
-    sd_exp     = sd(abs_log2_centered,     na.rm = TRUE),
+    median_exp = median(log2_centered, na.rm = TRUE),
+    mean_exp   = mean(log2_centered,   na.rm = TRUE),
+    sd_exp     = sd(log2_centered,     na.rm = TRUE),
     .groups    = "drop"
   )
 
@@ -2423,7 +2422,7 @@ sig_label <- function(p) {
 
 gene_means <- loop_counts %>%
   group_by(loop_category, loop_type, gene_name, condition) %>%
-  summarise(mean_log2 = mean(abs_log2_centered), .groups = "drop")   # <-- abs here
+  summarise(mean_log2 = mean(log2_centered), .groups = "drop")   # <-- abs here
 
 wilcox_results <- gene_means %>%
   group_by(loop_category, loop_type) %>%
@@ -2458,7 +2457,7 @@ write.table(wilcox_results,
 # ----------------------------------------------------------------------------
 y_positions <- loop_counts %>%
   group_by(loop_category, condition) %>%
-  summarise(y_max = max(abs_log2_centered, na.rm = TRUE), .groups = "drop")
+  summarise(y_max = max(log2_centered, na.rm = TRUE), .groups = "drop")
 
 bracket_df <- wilcox_results %>%
   pivot_longer(cols = c(sig_EP1, sig_Aro), names_to = "which", values_to = "sig") %>%
@@ -2489,7 +2488,7 @@ loop_type_colors <- c(
 # ----------------------------------------------------------------------------
 p1 <- ggplot(
   loop_counts,
-  aes(x = condition, y = abs_log2_centered, fill = condition)   # <-- abs here
+  aes(x = condition, y = log2_centered, fill = condition)   # <-- abs here
 ) +
   geom_boxplot(
     outlier.size  = 0.4,
@@ -2525,7 +2524,7 @@ p1 <- ggplot(
   labs(title = "Gene expression magnitude at loop anchors per loop category")
 
 print(p1)
-ggsave(file.path(loops_dir, "loop_anchor_abs_counts_boxplot_by_category.pdf"),
+ggsave(file.path(loops_dir, "loop_anchor_counts_boxplot_by_category.pdf"),
        p1, width = 16, height = 6)
 
 # ----------------------------------------------------------------------------
@@ -2600,7 +2599,7 @@ p2 <- ggplot(
   labs(title = "Expression magnitude at loop anchors: specific vs shared")
 
 print(p2)
-ggsave(file.path(loops_dir, "loop_anchor_abs_counts_violin_specific_vs_shared.pdf"),
+ggsave(file.path(loops_dir, "loop_anchor_counts_violin_specific_vs_shared.pdf"),
        p2, width = 8, height = 6)
 ```
 
