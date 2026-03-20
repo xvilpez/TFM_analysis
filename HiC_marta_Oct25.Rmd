@@ -1603,13 +1603,6 @@ for (d in c(loops_files_dir, loops_plots_dir)) {
 }
 
 # ----------------------------------------------------------------------------
-# Genome file (same as bedtools)
-# ----------------------------------------------------------------------------
-genome_file <- "R:/R_STIK/xavi_scripts/hg38.chrom.sizes.txt"
-# On server:
-# genome_file <- "/mnt/beegfs/xvilchez/files/hg38.chrom.sizes.txt"
-
-# ----------------------------------------------------------------------------
 # 1. Load loop anchor BED files
 # ----------------------------------------------------------------------------
 anchors_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/loops/intersected_loops"
@@ -1639,8 +1632,8 @@ anchor_colors <- c(
 
 read_anchor <- function(filename) {
   df <- read.table(file.path(anchors_dir, filename),
-                   sep    = "\t",
-                   header = FALSE) %>%
+                   sep       = "\t",
+                   header    = FALSE) %>%
     select(chrom = 1, start = 2, end = 3) %>%
     mutate(start = as.integer(start),
            end   = as.integer(end))
@@ -1658,71 +1651,53 @@ for (nm in names(anchors_gr_list)) {
 }
 
 # ----------------------------------------------------------------------------
-# Helper: bedtools-fisher-equivalent overlap stats (bp-level)
+# Helper: compute overlap counts + fold enrichment vs pooled background
 # ----------------------------------------------------------------------------
-compute_overlap_stats <- function(anchors_gr_list, peaks_gr, genome_file) {
+compute_overlap_stats <- function(anchors_gr_list, peaks_gr) {
 
-  # Read chromosome sizes
-  chrom_sizes <- read.table(genome_file, sep = "\t", header = FALSE,
-                             col.names = c("chrom", "size")) %>%
-    filter(chrom %in% seqlevels(peaks_gr))
-
-  genome_size <- sum(as.numeric(chrom_sizes$size))
-  cat(sprintf("  Genome size: %.0f bp\n", genome_size))
-
-  # Peaks: total bp covered (merged)
-  peaks_reduced <- reduce(peaks_gr)
-  peak_bp       <- sum(as.numeric(width(peaks_reduced)))
-  non_peak_bp   <- genome_size - peak_bp
-  cat(sprintf("  Peak bp: %.0f (%.4f%%)\n", peak_bp, peak_bp / genome_size * 100))
-
-  # Per anchor class: bp overlapping peaks
   counts <- lapply(names(anchors_gr_list), function(nm) {
-    gr            <- anchors_gr_list[[nm]]
-    anchor_bp     <- sum(as.numeric(width(reduce(gr))))
-    overlap_gr    <- intersect(reduce(gr), peaks_reduced)
-    overlap_bp    <- sum(as.numeric(width(overlap_gr)))
-    no_overlap_bp <- anchor_bp - overlap_bp
-    pct_overlap   <- overlap_bp / anchor_bp * 100
-
-    data.frame(anchor_class  = nm,
-               n_anchors     = length(gr),
-               anchor_bp     = anchor_bp,
-               overlap_bp    = overlap_bp,
-               no_overlap_bp = no_overlap_bp,
-               pct_overlap   = pct_overlap)
+    gr          <- anchors_gr_list[[nm]]
+    n_anchors   <- length(gr)
+    n_overlap   <- length(unique(queryHits(findOverlaps(gr, peaks_gr))))
+    pct_overlap <- n_overlap / n_anchors * 100
+    data.frame(anchor_class = nm,
+               n_anchors    = n_anchors,
+               n_overlap    = n_overlap,
+               pct_overlap  = pct_overlap)
   }) %>% bind_rows()
 
-  # Fisher test: bp-level 2x2 vs genome background (scaled to avoid overflow)
-  scale <- 1e6 / genome_size
-
+  # Fisher: each class vs all OTHER anchor classes combined (leave-one-out)
   fisher_res <- lapply(names(anchors_gr_list), function(nm) {
-    row  <- counts %>% filter(anchor_class == nm)
-    a    <- round(row$overlap_bp)
-    b    <- round(row$no_overlap_bp)
-    c_bg <- round(peak_bp     * scale)
-    d_bg <- round(non_peak_bp * scale)
 
-    ct <- matrix(c(a,    b,
-                   c_bg, d_bg),
+    row        <- counts %>% filter(anchor_class == nm)
+    rest       <- counts %>% filter(anchor_class != nm)
+
+    sw_with    <- row$n_overlap
+    sw_without <- row$n_anchors - row$n_overlap
+
+    bg_with    <- sum(rest$n_overlap)
+    bg_without <- sum(rest$n_anchors) - bg_with
+
+    ct <- matrix(c(sw_with,   sw_without,
+                   bg_with,   bg_without),
                  nrow = 2, byrow = TRUE,
-                 dimnames = list(c("Anchors", "Genome"),
-                                 c("Peak_bp", "Non_peak_bp")))
+                 dimnames = list(c("Class", "Other anchors"),
+                                 c("Peak", "No_Peak")))
 
-    ft <- fisher.test(ct, alternative = "greater")
+    ft <- fisher.test(ct, alternative = "two.sided")
 
-    data.frame(anchor_class  = nm,
-               n_anchors     = row$n_anchors,
-               anchor_bp     = row$anchor_bp,
-               overlap_bp    = row$overlap_bp,
-               pct_overlap   = row$pct_overlap,
-               OR            = ft$estimate,
-               CI_low        = ft$conf.int[1],
-               CI_high       = ft$conf.int[2],
-               p_value       = ft$p.value)
+    data.frame(anchor_class = nm,
+               n_anchors    = row$n_anchors,
+               n_overlap    = sw_with,
+               pct_overlap  = row$pct_overlap,
+               OR           = ft$estimate,
+               CI_low       = ft$conf.int[1],
+               CI_high      = ft$conf.int[2],
+               p_value      = ft$p.value)
   }) %>% bind_rows()
 
-  bg_pct <- peak_bp / genome_size * 100
+  # Background pct = all anchors pooled, for fold enrichment
+  bg_pct <- sum(counts$n_overlap) / sum(counts$n_anchors) * 100
 
   fisher_res <- fisher_res %>%
     mutate(
@@ -1765,7 +1740,7 @@ plot_anchor_polar <- function(counts, title_str) {
       panel.grid   = element_line(color = "gray85", linetype = "dashed"),
       legend.title = element_text(face = "bold")
     ) +
-    ylab("Fold Enrichment over genome background") +
+    ylab("Fold Enrichment over pooled anchor background") +
     labs(title = title_str)
 }
 
@@ -1776,8 +1751,7 @@ plot_anchor_forest <- function(fisher_res, title_str) {
   ggplot(fisher_res, aes(x = OR, y = anchor_class, color = anchor_class)) +
     geom_vline(xintercept = 1, linetype = "dashed",
                color = "gray40", linewidth = 0.5) +
-    geom_errorbarh(aes(xmin = CI_low,
-                       xmax = ifelse(is.infinite(CI_high), OR * 10, CI_high)),
+    geom_errorbarh(aes(xmin = CI_low, xmax = ifelse(is.infinite(CI_high), OR * 10, CI_high)),
                    height = 0.25, linewidth = 0.7) +
     geom_point(size = 3.5) +
     geom_text(aes(label = significance),
@@ -1794,7 +1768,7 @@ plot_anchor_forest <- function(fisher_res, title_str) {
       panel.grid.minor   = element_blank(),
       legend.position    = "none"
     ) +
-    xlab("Odds Ratio (log scale) vs genome background") +
+    xlab("Odds Ratio (log scale) vs other anchor classes") +
     ylab("Anchor class") +
     labs(title = title_str)
 }
@@ -1803,9 +1777,9 @@ plot_anchor_forest <- function(fisher_res, title_str) {
 # A. Full 697HF E2A-PBX1 peaks
 # ============================================================================
 cat("\n--- Full E2A-PBX1 peaks ---\n")
-res_full <- compute_overlap_stats(anchors_gr_list, peaks_gr, genome_file)
+res_full <- compute_overlap_stats(anchors_gr_list, peaks_gr)
 
-print(res_full$fisher[, c("anchor_class", "n_anchors", "overlap_bp",
+print(res_full$fisher[, c("anchor_class", "n_anchors", "n_overlap",
                            "pct_overlap", "fold_enrichment",
                            "OR", "CI_low", "CI_high", "p_value", "p_adj", "significance")])
 
@@ -1815,7 +1789,7 @@ write.table(res_full$fisher,
 
 p_polar_full <- plot_anchor_polar(
   res_full$counts,
-  "E2A-PBX1 peak enrichment per loop anchor class\n(genome background)"
+  "E2A-PBX1 peak enrichment per loop anchor class\n(pooled anchor background)"
 )
 print(p_polar_full)
 ggsave(file.path(loops_plots_dir, "loop_anchor_EP1_polar.pdf"),
@@ -1823,7 +1797,7 @@ ggsave(file.path(loops_plots_dir, "loop_anchor_EP1_polar.pdf"),
 
 p_forest_full <- plot_anchor_forest(
   res_full$fisher,
-  "Fisher's exact test: E2A-PBX1 peak enrichment\nper loop anchor class vs genome"
+  "Fisher's exact test: E2A-PBX1 peak enrichment\nper loop anchor class vs other anchor classes"
 )
 print(p_forest_full)
 ggsave(file.path(loops_plots_dir, "loop_anchor_EP1_forest.pdf"),
@@ -1833,9 +1807,9 @@ ggsave(file.path(loops_plots_dir, "loop_anchor_EP1_forest.pdf"),
 # B. Top25 697HF E2A-PBX1 peaks
 # ============================================================================
 cat("\n--- Top25 E2A-PBX1 peaks ---\n")
-res_top25 <- compute_overlap_stats(anchors_gr_list, peaks_top25_gr, genome_file)
+res_top25 <- compute_overlap_stats(anchors_gr_list, peaks_top25_gr)
 
-print(res_top25$fisher[, c("anchor_class", "n_anchors", "overlap_bp",
+print(res_top25$fisher[, c("anchor_class", "n_anchors", "n_overlap",
                             "pct_overlap", "fold_enrichment",
                             "OR", "CI_low", "CI_high", "p_value", "p_adj", "significance")])
 
@@ -1845,7 +1819,7 @@ write.table(res_top25$fisher,
 
 p_polar_top25 <- plot_anchor_polar(
   res_top25$counts,
-  "Top25 E2A-PBX1 peak enrichment per loop anchor class\n(genome background)"
+  "Top25 E2A-PBX1 peak enrichment per loop anchor class\n(pooled anchor background)"
 )
 print(p_polar_top25)
 ggsave(file.path(loops_plots_dir, "loop_anchor_EP1_top25_polar.pdf"),
@@ -1853,316 +1827,11 @@ ggsave(file.path(loops_plots_dir, "loop_anchor_EP1_top25_polar.pdf"),
 
 p_forest_top25 <- plot_anchor_forest(
   res_top25$fisher,
-  "Fisher's exact test: Top25 E2A-PBX1 peak enrichment\nper loop anchor class vs genome"
+  "Fisher's exact test: Top25 E2A-PBX1 peak enrichment\nper loop anchor class vs other anchor classes"
 )
 print(p_forest_top25)
 ggsave(file.path(loops_plots_dir, "loop_anchor_EP1_top25_forest.pdf"),
        p_forest_top25, width = 8, height = 5)
-```
-
-```{r Double-anchor loops}
-# ============================================================================
-# Double-anchor analysis: loops with E2A-PBX1 at BOTH anchors
-# ============================================================================
-library(GenomicRanges)
-library(ggplot2)
-library(dplyr)
-library(tidyr)
-
-# ----------------------------------------------------------------------------
-# 1. Load loop BEDPE files
-# ----------------------------------------------------------------------------
-loops_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/loops/intersected_loops"
-
-loop_files <- list(
-  "ARO_specific"   = "ARO_specific_only_05_10kb_exp30kb.bedpe",
-  "EP1_specific"   = "EP1_specific_only_05_10kb_exp30kb.bedpe",
-  "REH_specific"   = "REH_specific_only_05_10kb_exp30kb.bedpe",
-  "shared_EP1_ARO" = "shared_EP1_ARO_only_05_10kb_exp30kb.bedpe",
-  "shared_ARO_REH" = "shared_ARO_REH_only_05_10kb_exp30kb.bedpe",
-  "shared_EP1_REH" = "shared_EP1_REH_only_05_10kb_exp30kb.bedpe",
-  "shared_all3"    = "shared_loops_all3_05_10kb_exp30kb.bedpe"
-)
-
-read_loops <- function(filename) {
-  df <- read.table(file.path(loops_dir, filename),
-                   sep    = "\t",
-                   header = FALSE)
-  df %>%
-    select(chr1 = 1, start1 = 2, end1 = 3,
-           chr2 = 4, start2 = 5, end2 = 6) %>%
-    mutate(start1  = as.integer(start1),
-           end1    = as.integer(end1),
-           start2  = as.integer(start2),
-           end2    = as.integer(end2),
-           loop_id = row_number())
-}
-
-loops_list <- lapply(loop_files, read_loops)
-
-cat("Loop sets loaded:\n")
-for (nm in names(loops_list)) {
-  cat(sprintf("  %-20s : %d loops\n", nm, nrow(loops_list[[nm]])))
-}
-
-# ----------------------------------------------------------------------------
-# 2. Helper: classify each loop as none / single / double anchor
-# ----------------------------------------------------------------------------
-classify_double_anchor <- function(loops_df, peaks_gr) {
-
-  anc1_df <- data.frame(seqnames = loops_df$chr1,
-                        start    = loops_df$start1,
-                        end      = loops_df$end1,
-                        loop_id  = loops_df$loop_id)
-  anc2_df <- data.frame(seqnames = loops_df$chr2,
-                        start    = loops_df$start2,
-                        end      = loops_df$end2,
-                        loop_id  = loops_df$loop_id)
-
-  anc1_gr <- makeGRangesFromDataFrame(anc1_df, keep.extra.columns = TRUE)
-  anc2_gr <- makeGRangesFromDataFrame(anc2_df, keep.extra.columns = TRUE)
-
-  ids_anc1 <- unique(anc1_gr$loop_id[queryHits(findOverlaps(anc1_gr, peaks_gr))])
-  ids_anc2 <- unique(anc2_gr$loop_id[queryHits(findOverlaps(anc2_gr, peaks_gr))])
-
-  loops_df %>%
-    mutate(peak_anc1    = loop_id %in% ids_anc1,
-           peak_anc2    = loop_id %in% ids_anc2,
-           anchor_class = case_when(
-             peak_anc1 & peak_anc2 ~ "double",
-             peak_anc1 | peak_anc2 ~ "single",
-             TRUE                  ~ "none"
-           ))
-}
-
-# ----------------------------------------------------------------------------
-# 3. Run classification for both peak sets
-# ----------------------------------------------------------------------------
-classify_all <- function(loops_list, peaks_gr, peak_label) {
-
-  results <- lapply(names(loops_list), function(nm) {
-    df     <- classify_double_anchor(loops_list[[nm]], peaks_gr)
-    counts <- dplyr::count(df, anchor_class) %>%
-      dplyr::mutate(loop_class  = nm,
-                    peak_set    = peak_label,
-                    total_loops = nrow(df),
-                    pct         = n / total_loops * 100)
-    counts
-  }) %>% dplyr::bind_rows()
-
-  results %>%
-    dplyr::mutate(
-      loop_class   = factor(loop_class,   levels = anchor_levels),
-      anchor_class = factor(anchor_class, levels = c("double", "single", "none"))
-    )
-}
-
-res_double_full  <- classify_all(loops_list, peaks_gr,       "Full E2A-PBX1")
-res_double_top25 <- classify_all(loops_list, peaks_top25_gr, "Top25 E2A-PBX1")
-
-cat("\n--- Double-anchor summary: Full peaks ---\n")
-print(res_double_full  %>% select(loop_class, anchor_class, n, pct, total_loops))
-cat("\n--- Double-anchor summary: Top25 peaks ---\n")
-print(res_double_top25 %>% select(loop_class, anchor_class, n, pct, total_loops))
-
-write.table(res_double_full,
-            file.path(loops_files_dir, "double_anchor_full_peaks.tsv"),
-            sep = "\t", row.names = FALSE, quote = FALSE)
-write.table(res_double_top25,
-            file.path(loops_files_dir, "double_anchor_top25_peaks.tsv"),
-            sep = "\t", row.names = FALSE, quote = FALSE)
-
-# ----------------------------------------------------------------------------
-# 4. Fisher test: double-anchor enrichment vs genome background (bp-level)
-# ----------------------------------------------------------------------------
-fisher_double_genome <- function(loops_list, peaks_gr, genome_file, peak_label) {
-
-  # Genome size
-  chrom_sizes <- read.table(genome_file, sep = "\t", header = FALSE,
-                             col.names = c("chrom", "size")) %>%
-    filter(chrom %in% seqlevels(peaks_gr))
-  genome_size <- sum(as.numeric(chrom_sizes$size))
-
-  # Peak bp coverage
-  peaks_reduced <- reduce(peaks_gr)
-  peak_bp       <- sum(as.numeric(width(peaks_reduced)))
-  non_peak_bp   <- genome_size - peak_bp
-  scale         <- 1e6 / genome_size
-
-  c_bg <- round(peak_bp     * scale)
-  d_bg <- round(non_peak_bp * scale)
-
-  lapply(names(loops_list), function(nm) {
-
-    loops_df <- loops_list[[nm]]
-    df       <- classify_double_anchor(loops_df, peaks_gr)
-
-    # For double-anchor loops: combine both anchors as one region set
-    double_loops <- df %>% filter(anchor_class == "double")
-    total_loops  <- nrow(df)
-    n_double     <- nrow(double_loops)
-
-    if (n_double == 0) {
-      return(data.frame(loop_class  = nm,
-                        peak_set    = peak_label,
-                        n_double    = 0,
-                        n_total     = total_loops,
-                        pct_double  = 0,
-                        overlap_bp  = 0,
-                        OR          = NA,
-                        CI_low      = NA,
-                        p_value     = NA))
-    }
-
-    # bp of double-anchor loop anchors overlapping peaks
-    anc1_double <- makeGRangesFromDataFrame(
-      data.frame(seqnames = double_loops$chr1,
-                 start    = double_loops$start1,
-                 end      = double_loops$end1),
-      seqnames.field = "seqnames"
-    )
-    anc2_double <- makeGRangesFromDataFrame(
-      data.frame(seqnames = double_loops$chr2,
-                 start    = double_loops$start2,
-                 end      = double_loops$end2),
-      seqnames.field = "seqnames"
-    )
-
-    both_anchors_gr  <- reduce(c(anc1_double, anc2_double))
-    anchor_bp        <- sum(as.numeric(width(both_anchors_gr)))
-    overlap_gr       <- intersect(both_anchors_gr, peaks_reduced)
-    overlap_bp       <- sum(as.numeric(width(overlap_gr)))
-    no_overlap_bp    <- anchor_bp - overlap_bp
-    pct_overlap      <- overlap_bp / anchor_bp * 100
-
-    ct <- matrix(c(round(overlap_bp), round(no_overlap_bp),
-                   c_bg,              d_bg),
-                 nrow = 2, byrow = TRUE,
-                 dimnames = list(c("Double anchors", "Genome"),
-                                 c("Peak_bp", "Non_peak_bp")))
-
-    ft <- fisher.test(ct, alternative = "greater")
-
-    data.frame(loop_class  = nm,
-               peak_set    = peak_label,
-               n_double    = n_double,
-               n_total     = total_loops,
-               pct_double  = n_double / total_loops * 100,
-               anchor_bp   = anchor_bp,
-               overlap_bp  = overlap_bp,
-               pct_overlap = pct_overlap,
-               OR          = ft$estimate,
-               CI_low      = ft$conf.int[1],
-               CI_high     = ft$conf.int[2],
-               p_value     = ft$p.value)
-  }) %>% bind_rows() %>%
-    mutate(
-      p_adj        = p.adjust(p_value, method = "BH"),
-      significance = case_when(
-        p_adj < 0.001 ~ "***",
-        p_adj < 0.01  ~ "**",
-        p_adj < 0.05  ~ "*",
-        TRUE          ~ "ns"
-      ),
-      loop_class = factor(loop_class, levels = anchor_levels)
-    )
-}
-
-fisher_double_full  <- fisher_double_genome(loops_list, peaks_gr,       genome_file, "Full E2A-PBX1")
-fisher_double_top25 <- fisher_double_genome(loops_list, peaks_top25_gr, genome_file, "Top25 E2A-PBX1")
-
-cat("\n--- Fisher double-anchor vs genome: Full peaks ---\n")
-print(fisher_double_full)
-cat("\n--- Fisher double-anchor vs genome: Top25 peaks ---\n")
-print(fisher_double_top25)
-
-write.table(dplyr::bind_rows(fisher_double_full, fisher_double_top25),
-            file.path(loops_files_dir, "double_anchor_fisher_genome.tsv"),
-            sep = "\t", row.names = FALSE, quote = FALSE)
-
-# ----------------------------------------------------------------------------
-# 5. Stacked barplot: double / single / none proportions
-# ----------------------------------------------------------------------------
-double_colors <- c("double" = "#c0392b",
-                   "single" = "#e67e22",
-                   "none"   = "#bdc3c7")
-
-plot_double_bar <- function(res_df, title_str) {
-  ggplot(res_df, aes(x = loop_class, y = pct, fill = anchor_class)) +
-    geom_bar(stat = "identity", color = "black", linewidth = 0.4) +
-    geom_text(aes(label = ifelse(pct > 2, paste0(round(pct, 1), "%"), "")),
-              position = position_stack(vjust = 0.5),
-              size = 3.5, fontface = "bold", color = "white") +
-    scale_fill_manual(values = double_colors,
-                      name   = "Peak overlap",
-                      labels = c("double" = "Both anchors",
-                                 "single" = "One anchor",
-                                 "none"   = "No anchor")) +
-    scale_y_continuous(expand = c(0, 0), limits = c(0, 101)) +
-    theme_bw() +
-    theme(
-      panel.grid   = element_blank(),
-      axis.text.x  = element_text(size = 11, angle = 35, hjust = 1, face = "bold"),
-      axis.text.y  = element_text(size = 10),
-      axis.title   = element_text(size = 13),
-      plot.title   = element_text(size = 14, face = "bold", hjust = 0.5),
-      legend.title = element_text(face = "bold")
-    ) +
-    xlab("Loop class") + ylab("Proportion of loops (%)") +
-    labs(title = title_str)
-}
-
-p_double_full <- plot_double_bar(res_double_full,
-                                  "E2A-PBX1 peak overlap at loop anchors\n(Full peaks)")
-print(p_double_full)
-ggsave(file.path(loops_plots_dir, "double_anchor_full_bar.pdf"),
-       p_double_full, width = 10, height = 6)
-
-p_double_top25 <- plot_double_bar(res_double_top25,
-                                   "E2A-PBX1 peak overlap at loop anchors\n(Top25 peaks)")
-print(p_double_top25)
-ggsave(file.path(loops_plots_dir, "double_anchor_top25_bar.pdf"),
-       p_double_top25, width = 10, height = 6)
-
-# ----------------------------------------------------------------------------
-# 6. Dot plot: % double-anchor with genome-background significance
-# ----------------------------------------------------------------------------
-plot_double_dot <- function(fisher_df, title_str) {
-  ggplot(fisher_df, aes(x = loop_class, y = pct_double, fill = loop_class)) +
-    geom_col(color = "black", linewidth = 0.4, width = 0.7) +
-    geom_text(aes(label = significance, y = pct_double),
-              vjust = -0.4, size = 5, color = "black") +
-    scale_fill_manual(values = anchor_colors) +
-    scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
-    theme_bw() +
-    theme(
-      panel.grid      = element_blank(),
-      axis.text.x     = element_text(size = 11, angle = 35, hjust = 1, face = "bold"),
-      axis.text.y     = element_text(size = 10),
-      axis.title      = element_text(size = 13),
-      plot.title      = element_text(size = 14, face = "bold", hjust = 0.5),
-      legend.position = "none"
-    ) +
-    xlab("Loop class") +
-    ylab("% loops with peak at both anchors") +
-    labs(title = title_str)
-}
-
-p_dot_full <- plot_double_dot(
-  fisher_double_full,
-  "Loops with E2A-PBX1 at both anchors\n(Full peaks, vs genome background)"
-)
-print(p_dot_full)
-ggsave(file.path(loops_plots_dir, "double_anchor_full_dot.pdf"),
-       p_dot_full, width = 10, height = 6)
-
-p_dot_top25 <- plot_double_dot(
-  fisher_double_top25,
-  "Loops with E2A-PBX1 at both anchors\n(Top25 peaks, vs genome background)"
-)
-print(p_dot_top25)
-ggsave(file.path(loops_plots_dir, "double_anchor_top25_dot.pdf"),
-       p_dot_top25, width = 10, height = 6)
 ```
 
 ---
