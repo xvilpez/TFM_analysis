@@ -1148,6 +1148,7 @@ write.table(
   file.path(clusters_dir, "ChIP_peak_TSS_analysis_summary.tsv"),
   sep = "\t", row.names = FALSE, quote = FALSE
 )
+
 cat("ChIP peak TSS analysis summary saved to Clusters/\n")
 
 # Statistical tests
@@ -1228,7 +1229,8 @@ library(GenomicRanges)
 library(TxDb.Hsapiens.UCSC.hg38.knownGene)
 library(org.Hs.eg.db)
 
-chip_path_top25 <- "/mnt/beegfs/xvilchez/chip_publicdata/top25_697HF_E2APBX1-HF_peaks.bed"
+# chip_path_top25 <- "/mnt/beegfs/xvilchez/chip_publicdata/top25_697HF_E2APBX1-HF_peaks.bed"
+chip_path_top25 <- "R:/R_STIK/chip_seq/Xavi_TFM/top25_697HF_E2APBX1-HF_peaks.bed"
 
 if (!file.exists(chip_path_top25)) {
   stop("Top25 ChIP-seq peak file not found at: ", chip_path_top25)
@@ -2854,6 +2856,14 @@ dbs <- c("GO_Biological_Process_2023",
          "WikiPathway_2023_Human",
          "Reactome_2022",
          "MSigDB_Hallmark_2020")
+
+# Build comp_rnaseq: DEG results joined with compartment switching class
+comp_rnaseq <- bind_rows(all_results) %>%
+  rename(gene_name = gene) %>%
+  inner_join(
+    bin_gene_map %>% rename(gene_name = gene_name),  # already named gene_name
+    by = "gene_name"
+  )
 
 # Filter DEGs passing thresholds — keep direction (diffexpressed)
 deg_filtered <- comp_rnaseq %>%
