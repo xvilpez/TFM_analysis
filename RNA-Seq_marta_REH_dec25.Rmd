@@ -1043,7 +1043,7 @@ for (cluster_name in names(cluster_gene_lists)) {
         # Use shared helper: cleans terms + computes gene_ratio uniformly for all DBs
         enriched_processed <- process_enrichr_db(enriched_cluster[[db_idx]])
         
-        sig_terms <- subset(enriched_processed, Adjusted.P.value < 0.05)
+        sig_terms <- subset(enriched_processed, Adjusted.P.value < 0.1)
         if (nrow(sig_terms) > 0) {
           
           # Save gene lists + summary TSV using shared helper (handles ";" and "; " separators)
