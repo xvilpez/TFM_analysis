@@ -1881,12 +1881,13 @@ if (nrow(tf_peaks_family_combined) > 0) {
   tf_peaks_mat$n_motifs  <- NULL
   tf_peaks_mat <- as.matrix(tf_peaks_mat)
   
+    pdf(file.path(homer_chip_dir, "TF_family_heatmap_chip_peaks.pdf"), width = 12, height = 8)
   pheatmap(tf_peaks_mat, cluster_rows = FALSE, cluster_cols = FALSE,
     color = colorRampPalette(c("white","pink","red","darkred"))(100),
     main = "TF Family Enrichment in ChIP Peaks Across Clusters\n(Max -log10 P-value per family)",
-    filename = file.path(homer_chip_dir, "TF_family_heatmap_chip_peaks.pdf"),
     display_numbers = TRUE, number_format = "%.1f", fontsize = 11,
     angle_col = 0, cellwidth = 40, cellheight = 30)
+  dev.off()
   
   pheatmap(tf_peaks_mat, cluster_rows = FALSE, cluster_cols = FALSE,
     color = colorRampPalette(c("white","pink","red","darkred"))(100),
@@ -2217,15 +2218,13 @@ if (nrow(tf_top25_family_combined) > 0) {
   tf_top25_mat$TF_Family <- NULL
   tf_top25_mat <- as.matrix(tf_top25_mat)
 
-  pheatmap(tf_top25_mat,
-    cluster_rows = FALSE, cluster_cols = FALSE,
-    color = colorRampPalette(c("white", "pink", "red", "darkred"))(100),
+  pdf(file.path(homer_chip_top25_dir, "TF_family_heatmap_chip_top25_peaks.pdf"), width = 12, height = 8)
+  pheatmap(tf_top25_mat, cluster_rows = FALSE, cluster_cols = FALSE,
+    color = colorRampPalette(c("white","pink","red","darkred"))(100),
     main = "TF Family Enrichment in Top25 ChIP Peaks Across Clusters\n(Max -log10 P-value per family)",
-    filename = file.path(homer_chip_top25_dir,
-                         "TF_family_heatmap_chip_top25_peaks.pdf"),
-    display_numbers = TRUE, number_format = "%.1f",
-    fontsize = 11, angle_col = 0,
-    cellwidth = 40, cellheight = 30)
+    display_numbers = TRUE, number_format = "%.1f", fontsize = 11,
+    angle_col = 0, cellwidth = 40, cellheight = 30)
+  dev.off()
 
   tf_top25_heatmap_plot <- pheatmap(tf_top25_mat,
     cluster_rows = FALSE, cluster_cols = FALSE,
@@ -2523,7 +2522,7 @@ p1 <- ggplot(
   ) +
   xlab("Condition") +
   ylab("|Log2 normalized counts| (batch-corrected, mean-centered)") +
-  labs(title = "Gene expression magnitude at loop anchors per loop category")
+  labs(title = "Gene expression at loop anchors per loop category")
 
 print(p1)
 ggsave(file.path(loops_dir, "loop_anchor_counts_boxplot_by_category.pdf"),
@@ -2598,7 +2597,7 @@ p2 <- ggplot(
   ) +
   xlab("Condition") +
   ylab("|Log2 normalized counts| (batch-corrected, mean-centered)") +
-  labs(title = "Expression magnitude at loop anchors: specific vs shared")
+  labs(title = "Expression at loop anchors: specific vs shared")
 
 print(p2)
 ggsave(file.path(loops_dir, "loop_anchor_counts_violin_specific_vs_shared.pdf"),
