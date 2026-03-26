@@ -393,6 +393,37 @@ assay(vsd_corrected) <- mat_corrected
 
 cat("\n### Analysis will proceed with", ncol(dds), "samples (GFP excluded) ###\n\n")
 ```
+```{r Sample QC - PCA}
+# PCA before batch correction
+pca_original <- plotPCA(vsd_original, intgroup = c("condition", "batch"), returnData = TRUE)
+
+percentVar <- round(100 * attr(pca_original, "percentVar"))
+
+p_pca_before <- ggplot(pca_original, aes(PC1, PC2, color = condition, shape = batch, label = name)) +
+  geom_point(size = 4) +
+  geom_text_repel() +
+  theme_bw() +
+  xlab(paste0("PC1 (", percentVar[1], "% variance)")) +
+  ylab(paste0("PC2 (", percentVar[2], "% variance)")) +
+  ggtitle("PCA – Before Batch Correction")
+print(p_pca_before)
+ggsave(file.path(qc_dir, "PCA_withoutGFP_before_batch_correction.pdf"), p_pca_before, width = 8, height = 6)
+
+# PCA after batch correction
+pca_corrected <- plotPCA(vsd_corrected, intgroup = c("condition", "batch"), returnData = TRUE)
+
+percentVar_corrected <- round(100 * attr(pca_corrected, "percentVar"))
+
+p_pca_after <- ggplot(pca_corrected, aes(PC1, PC2, color = condition, shape = batch, label = name)) +
+  geom_point(size = 4) +
+  geom_text_repel() +
+  theme_bw() +
+  xlab(paste0("PC1 (", percentVar_corrected[1], "% variance)")) +
+  ylab(paste0("PC2 (", percentVar_corrected[2], "% variance)")) +
+  ggtitle("PCA – After Batch Correction")
+print(p_pca_after)
+ggsave(file.path(qc_dir, "PCA_withoutGFP_after_batch_correction.pdf"), p_pca_after, width = 8, height = 6)
+```
 
 ## Differential Expression Analysis with LFC Shrinkage
 
