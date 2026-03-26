@@ -1111,19 +1111,18 @@ overlap_counts <- lapply(all_switching_levels, function(sw) {
 }) %>% bind_rows()
 
 # ----------------------------------------------------------------------------
-# Background: constitutive bins only (A_A_A + B_B_B)
+# Background: all bins pooled
 # ----------------------------------------------------------------------------
-constitutive_counts <- overlap_counts %>%
-  # filter(switching %in% c("A_A_A", "B_B_B")) %>%
+bg_counts <- overlap_counts %>%
   summarise(n_bins    = sum(n_bins),
             n_overlap = sum(n_overlap))
 
-bg_bins_with    <- constitutive_counts$n_overlap
-bg_bins_without <- constitutive_counts$n_bins - constitutive_counts$n_overlap
-background_pct  <- bg_bins_with / constitutive_counts$n_bins * 100
+bg_bins_with    <- bg_counts$n_overlap
+bg_bins_without <- bg_counts$n_bins - bg_counts$n_overlap
+background_pct  <- bg_bins_with / bg_counts$n_bins * 100
 
-cat(sprintf("Constitutive background: %d bins, %d with peak (%.2f%%)\n",
-            constitutive_counts$n_bins, bg_bins_with, background_pct))
+cat(sprintf("Background: %d bins, %d with peak (%.2f%%)\n",
+            bg_counts$n_bins, bg_bins_with, background_pct))
 
 # ----------------------------------------------------------------------------
 # Fisher's exact test for each switching class vs constitutive background
@@ -1205,7 +1204,7 @@ cs_REH_merge <- cs_REH_merge %>%
 
 # ----------------------------------------------------------------------------
 # Plot 1 — Polar enrichment plot with all 8 switching classes
-# (constitutive dashed reference line at background_pct-based fold = 1)
+# (dashed reference line at background_pct-based fold = 1)
 # ----------------------------------------------------------------------------
 
 overlap_polar <- ggplot(overlap_counts,
@@ -1227,7 +1226,7 @@ overlap_polar <- ggplot(overlap_counts,
     panel.grid   = element_line(color = "gray85", linetype = "dashed"),
     legend.title = element_text(face = "bold")
   ) +
-  ylab("Fold Enrichment over constitutive background") +
+  ylab("Fold Enrichment over pooled background") +
   labs(title = "E2A-PBX1 peak enrichment per compartment switching class\n(REH_EP1_EP1Aro)")
 print(overlap_polar)
 ggsave(file.path(plots_dir, "EP1_overlap_polar.pdf"), overlap_polar, width = 10, height = 6)
@@ -1257,9 +1256,9 @@ forest_plot <- ggplot(fisher_results,
     panel.grid.minor   = element_blank(),
     legend.position    = "none"
   ) +
-  xlab("Odds Ratio (log scale) vs constitutive background") +
+  xlab("Odds Ratio (log scale) vs pooled background") +
   ylab("Switching class") +
-  labs(title = "Fisher's exact test: E2A-PBX1 peak enrichment\nvs constitutive bins (A_A_A + B_B_B)")
+  labs(title = "Fisher's exact test: E2A-PBX1 peak enrichment\nvs all bins")
 print(forest_plot)
 ggsave(file.path(plots_dir, "EP1_fisher_forest.pdf"), forest_plot, width = 8, height = 5)
 
@@ -1371,16 +1370,16 @@ overlap_top25_counts <- lapply(all_switching_levels, function(sw) {
 # ----------------------------------------------------------------------------
 # Background: all bins (same as original)
 # ----------------------------------------------------------------------------
-constitutive_top25_counts <- overlap_top25_counts %>%
+bgtop25_counts <- overlap_top25_counts %>%
   summarise(n_bins    = sum(n_bins),
             n_overlap = sum(n_overlap))
 
-bg_top25_bins_with    <- constitutive_top25_counts$n_overlap
-bg_top25_bins_without <- constitutive_top25_counts$n_bins - constitutive_top25_counts$n_overlap
-background_top25_pct  <- bg_top25_bins_with / constitutive_top25_counts$n_bins * 100
+bg_top25_bins_with    <- bgtop25_counts$n_overlap
+bg_top25_bins_without <- bgtop25_counts$n_bins - bgtop25_counts$n_overlap
+background_top25_pct  <- bg_top25_bins_with / bgtop25_counts$n_bins * 100
 
 cat(sprintf("Top25 background: %d bins, %d with peak (%.2f%%)\n",
-            constitutive_top25_counts$n_bins,
+            bgtop25_counts$n_bins,
             bg_top25_bins_with,
             background_top25_pct))
 
