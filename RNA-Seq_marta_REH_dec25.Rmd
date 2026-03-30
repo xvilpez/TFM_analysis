@@ -7,8 +7,8 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
-# knitr::opts_knit$set(root.dir ="/ijc/LABS/STIK/RAW/rna_seq/rnaseq_marta_REHAro_dec25") ### If I run it through OnDemand server
-knitr::opts_knit$set(root.dir = "R:/R_STIK/rna_seq/rnaseq_marta_REHAro_dec25") ### If I run it in the workstation
+knitr::opts_knit$set(root.dir ="/ijc/LABS/STIK/RAW/rna_seq/rnaseq_marta_REHAro_dec25") ### If I run it through OnDemand server
+# knitr::opts_knit$set(root.dir = "R:/R_STIK/rna_seq/rnaseq_marta_REHAro_dec25") ### If I run it in the workstation
 ```
 
 ```{r initialization, warning=FALSE, message=FALSE}
@@ -882,68 +882,72 @@ cat(paste("Total unique DEGs across all contrasts:", length(all_deg_genes), "\n\
 # Extract VST-transformed values for all DEGs (batch-corrected)
 mat_all_deg <- assay(vsd_corrected)[all_deg_genes, , drop = FALSE]
 
-# Z-score normalization
-mat_all_deg_scaled <- t(scale(t(mat_all_deg)))
-
 # Remove any rows with NA or Inf values
-valid_rows <- complete.cases(mat_all_deg_scaled) &
-              !apply(mat_all_deg_scaled, 1, function(x) any(is.infinite(x)))
-mat_all_deg_scaled <- mat_all_deg_scaled[valid_rows, ]
+valid_rows <- complete.cases(mat_all_deg) &
+              !apply(mat_all_deg, 1, function(x) any(is.infinite(x)))
+mat_all_deg <- mat_all_deg[valid_rows, ]
+mat_scaled <- t(scale(t(mat_all_deg)))   # z-score per gene (row)
 
-cat(paste("Genes used for clustering:", nrow(mat_all_deg_scaled), "\n\n"))
+# Remove any genes with zero variance (scale() produces NaN for those)
+valid_rows <- complete.cases(mat_scaled) &
+              !apply(mat_scaled, 1, function(x) any(is.infinite(x)))
+mat_scaled   <- mat_scaled[valid_rows, ]
+mat_all_deg  <- mat_all_deg[valid_rows, ]   # keep raw in sync for reference
+cat(paste("Genes after variance filter:", nrow(mat_scaled), "\n\n"))
+cat(paste("Genes used for clustering:", nrow(mat_all_deg), "\n\n"))
 ```
 
 ```{r Kmeans heatmap per samples}
 cat("\n=== Creating DEG Heatmap: K-means clustering ===\n\n")
 
-# MANUAL OVERRIDE
 optimal_k <- 8
 set.seed(42)
 
-# K-means clustering
-km_result <- kmeans(mat_all_deg_scaled, centers = optimal_k, nstart = 25, iter.max = 100)
-clusters <- km_result$cluster
+# ── Cluster on z-scaled matrix ────────────────────────────────────────────
+km_result <- kmeans(mat_scaled, centers = optimal_k, nstart = 25, iter.max = 100)
+clusters  <- km_result$cluster
 
-# Calculate mean expression per cluster per condition
+cluster_colors <- setNames(
+  colorRampPalette(brewer.pal(min(12, optimal_k), "Set3"))(optimal_k),
+  as.character(1:optimal_k)
+)
+
+# ── Column order ──────────────────────────────────────────────────────────
 ep1_samples <- rownames(coldata)[coldata$condition == "EP1"]
 aro_samples <- rownames(coldata)[coldata$condition == "Aro"]
 reh_samples <- rownames(coldata)[coldata$condition == "REH"]
+col_order   <- c(reh_samples, ep1_samples, aro_samples)
 
+# ── Cluster summary on z-scaled values ───────────────────────────────────
 cluster_stats <- data.frame(
-  Cluster = 1:optimal_k,
-  Mean_EP1 = NA,
-  Mean_Aro = NA,
-  Mean_REH = NA,
-  N_genes = NA
+  Cluster  = 1:optimal_k,
+  Mean_EP1 = NA, Mean_Aro = NA, Mean_REH = NA, N_genes = NA
 )
 for (k in 1:optimal_k) {
-  genes_in_cluster <- names(clusters)[clusters == k]
-  cluster_stats$N_genes[k] <- length(genes_in_cluster)
-  cluster_stats$Mean_EP1[k] <- mean(mat_all_deg_scaled[genes_in_cluster, ep1_samples], na.rm = TRUE)
-  cluster_stats$Mean_Aro[k] <- mean(mat_all_deg_scaled[genes_in_cluster, aro_samples], na.rm = TRUE)
-  cluster_stats$Mean_REH[k] <- mean(mat_all_deg_scaled[genes_in_cluster, reh_samples], na.rm = TRUE)
+  g <- names(clusters)[clusters == k]
+  cluster_stats$N_genes[k]  <- length(g)
+  cluster_stats$Mean_EP1[k] <- mean(mat_scaled[g, ep1_samples], na.rm = TRUE)
+  cluster_stats$Mean_Aro[k] <- mean(mat_scaled[g, aro_samples], na.rm = TRUE)
+  cluster_stats$Mean_REH[k] <- mean(mat_scaled[g, reh_samples], na.rm = TRUE)
 }
 
-cluster_order <- order(cluster_stats$Mean_REH)
-col_order <- c(reh_samples, ep1_samples, aro_samples)
-mat_reordered <- mat_all_deg_scaled[, col_order]
+# Order clusters by mean REH z-score (descending: low-in-REH first)
+cluster_order <- order(cluster_stats$Mean_REH, decreasing = FALSE)
+
+mat_reordered <- mat_scaled[, col_order]
 
 genes_ordered <- unlist(lapply(cluster_order, function(k) {
-  genes <- names(clusters)[clusters == k]
-  ep1_vs_reh <- rowMeans(mat_reordered[genes, ep1_samples, drop = FALSE]) -
-                rowMeans(mat_reordered[genes, reh_samples, drop = FALSE])
-  genes[order(ep1_vs_reh)]
+  names(clusters)[clusters == k]
 }))
 
 mat_final <- mat_reordered[genes_ordered, ]
 
-# Annotations
+# ── Annotations ───────────────────────────────────────────────────────────
 ann_col <- data.frame(
   condition = sapply(colnames(mat_final), function(x) {
-    if (x %in% ep1_samples) return("EP1")
-    else if (x %in% aro_samples) return("Aro")
-    else if (x %in% reh_samples) return("REH")
-    else return("Unknown")
+    if (x %in% ep1_samples) "EP1"
+    else if (x %in% aro_samples) "Aro"
+    else "REH"
   }),
   row.names = colnames(mat_final)
 )
@@ -955,51 +959,43 @@ ann_row <- data.frame(
 
 ann_colors <- list(
   condition = c(EP1 = "#E41A1C", Aro = "#377EB8", REH = "#4DAF4A"),
-  cluster = setNames(
-    colorRampPalette(brewer.pal(min(12, optimal_k), "Set3"))(optimal_k),
-    as.character(cluster_order)
-  )
+  cluster   = cluster_colors[as.character(cluster_order)]
 )
 
-# Generate and save heatmap
-pdf(file.path(clusters_dir, paste0("kmeans_heatmap_k", optimal_k, ".pdf")), width = 10, height = 14)
-pheatmap(
+# ── gaps_row: must reflect the order genes actually appear in mat_final ───
+# Build gap positions explicitly rather than relying on table() ordering
+gap_sizes <- sapply(cluster_order, function(k) sum(clusters[genes_ordered] == k))
+gaps_row  <- cumsum(gap_sizes)
+gaps_row  <- gaps_row[-length(gaps_row)]   # no gap after last cluster
+
+# ── Generate and save heatmap ─────────────────────────────────────────────
+heatmap_args <- list(
   mat_final,
-  annotation_col = ann_col,
-  annotation_row = ann_row,
+  scale            = "none",          
+  annotation_col   = ann_col,
+  annotation_row   = ann_row,
   annotation_colors = ann_colors,
-  cluster_rows = FALSE,
-  cluster_cols = FALSE,
-  show_rownames = FALSE,
-  show_colnames = TRUE,
-  border_color = NA,
-  gaps_row = cumsum(table(clusters[genes_ordered])[as.character(cluster_order)]),
-  gaps_col = c(3, 6),
-  color = colorRampPalette(rev(brewer.pal(9, "RdBu")))(255),
-  fontsize_col = 10,
-  main = paste0("All DEGs - K-means (k=", optimal_k, " clusters)")
+  cluster_rows     = FALSE,
+  cluster_cols     = FALSE,
+  show_rownames    = FALSE,
+  show_colnames    = TRUE,
+  border_color     = NA,
+  gaps_row         = gaps_row,
+  gaps_col         = c(3, 6),
+  color            = colorRampPalette(rev(brewer.pal(9, "RdBu")))(255),
+  fontsize_col     = 10,
+  main             = paste0("All DEGs — K-means (k=", optimal_k,
+                            " clusters, z-scored rows)")
 )
+
+pdf(file.path(clusters_dir, paste0("kmeans_heatmap_k", optimal_k, ".pdf")),
+    width = 10, height = 14)
+do.call(pheatmap, heatmap_args)
 dev.off()
 
-# Also render inline
-pheatmap(
-  mat_final,
-  annotation_col = ann_col,
-  annotation_row = ann_row,
-  annotation_colors = ann_colors,
-  cluster_rows = FALSE,
-  cluster_cols = FALSE,
-  show_rownames = FALSE,
-  show_colnames = TRUE,
-  border_color = NA,
-  gaps_row = cumsum(table(clusters[genes_ordered])[as.character(cluster_order)]),
-  gaps_col = c(3, 6),
-  color = colorRampPalette(rev(brewer.pal(9, "RdBu")))(255),
-  fontsize_col = 10,
-  main = paste0("All DEGs - K-means (k=", optimal_k, " clusters)")
-)
+do.call(pheatmap, heatmap_args)
 
-# Export cluster gene membership TSV
+# ── Export cluster gene membership ────────────────────────────────────────
 cluster_membership_df <- data.frame(
   Gene    = names(clusters),
   Cluster = clusters
@@ -1043,7 +1039,7 @@ for (cluster_name in names(cluster_gene_lists)) {
         # Use shared helper: cleans terms + computes gene_ratio uniformly for all DBs
         enriched_processed <- process_enrichr_db(enriched_cluster[[db_idx]])
         
-        sig_terms <- subset(enriched_processed, Adjusted.P.value < 0.1)
+        sig_terms <- subset(enriched_processed, Adjusted.P.value < 0.05)
         if (nrow(sig_terms) > 0) {
           
           # Save gene lists + summary TSV using shared helper (handles ";" and "; " separators)
@@ -1077,8 +1073,8 @@ library(GenomicRanges)
 library(TxDb.Hsapiens.UCSC.hg38.knownGene)
 library(org.Hs.eg.db)
 
-# chip_path <- "/mnt/beegfs/xvilchez/chip_publicdata/697HF_E2APBX1-HF_peaks.bed"
-chip_path <- "R:/R_STIK/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed"
+chip_path <- "/mnt/beegfs/xvilchez/chip_publicdata/697HF_E2APBX1-HF_peaks.bed"
+# chip_path <- "R:/R_STIK/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed"
 
 if (!file.exists(chip_path)) {
   stop("ChIP-seq peak file not found at: ", chip_path)
@@ -1194,11 +1190,13 @@ cat("Chi-square test for differences in peak association across clusters:\n")
 print(chi_test)
 
 all_distances_list <- lapply(cluster_peak_analysis, function(x) x$distances)
-names(all_distances_list) <- paste0("Cluster_", 1:optimal_k)
 
 distance_df <- data.frame(
   distance = unlist(all_distances_list),
-  cluster  = factor(rep(names(all_distances_list), sapply(all_distances_list, length)))
+  cluster  = factor(
+    rep(as.character(1:optimal_k), sapply(all_distances_list, length)),
+    levels = as.character(1:optimal_k)
+  )
 )
 
 kw_test <- kruskal.test(distance ~ cluster, data = distance_df)
@@ -1218,7 +1216,7 @@ p_bar <- ggplot(summary_peak_table,
                 aes(x = factor(Cluster), y = Percent_With_Peak, fill = factor(Cluster))) +
   geom_bar(stat = "identity") +
   geom_text(aes(label = paste0(round(Percent_With_Peak, 1), "%")), vjust = -0.5, size = 4) +
-  scale_fill_brewer(palette = "Set3") +
+  scale_fill_manual(values = cluster_colors) +
   theme_bw() +
   theme(legend.position = "none") +
   labs(title = "Percentage of Genes with E2A-PBX1 Peaks within 1 Mb of TSS",
@@ -1229,7 +1227,7 @@ ggsave(file.path(clusters_dir, "ChIP_pct_genes_with_peak.pdf"), p_bar, width = 8
 library(ggpubr)
 p_box <- ggplot(distance_df, aes(x = cluster, y = distance/1000, fill = cluster)) +
   geom_boxplot(outlier.size = 0.5) +
-  scale_fill_brewer(palette = "Set3") +
+  scale_fill_manual(values = cluster_colors) +
   theme_bw() +
   theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1)) +
   labs(title = "Distribution of Peak-TSS Distances by Cluster",
@@ -1242,7 +1240,7 @@ ggsave(file.path(clusters_dir, "ChIP_peak_TSS_distance_boxplot.pdf"), p_box, wid
 p_violin <- ggplot(distance_df, aes(x = cluster, y = distance/1000, fill = cluster)) +
   geom_violin(alpha = 0.6, trim = FALSE) +
   geom_boxplot(width = 0.15, outlier.shape = NA, alpha = 0.8) +
-  scale_fill_brewer(palette = "Set3") +
+  scale_fill_manual(values = cluster_colors) +
   theme_bw() +
   theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1)) +
   labs(title = "Peak-TSS Distance Distribution by Cluster",
@@ -1260,8 +1258,8 @@ library(GenomicRanges)
 library(TxDb.Hsapiens.UCSC.hg38.knownGene)
 library(org.Hs.eg.db)
 
-# chip_path_top25 <- "/mnt/beegfs/xvilchez/chip_publicdata/top25_697HF_E2APBX1-HF_peaks.bed"
-chip_path_top25 <- "R:/R_STIK/chip_seq/Xavi_TFM/top25_697HF_E2APBX1-HF_peaks.bed"
+chip_path_top25 <- "/mnt/beegfs/xvilchez/chip_publicdata/top25_697HF_E2APBX1-HF_peaks.bed"
+# chip_path_top25 <- "R:/R_STIK/chip_seq/Xavi_TFM/top25_697HF_E2APBX1-HF_peaks.bed"
 
 if (!file.exists(chip_path_top25)) {
   stop("Top25 ChIP-seq peak file not found at: ", chip_path_top25)
@@ -1347,12 +1345,13 @@ cat("Chi-square test for differences in peak association across clusters:\n")
 print(chi_test_top25)
 
 all_distances_top25_list <- lapply(cluster_peak_top25_analysis, function(x) x$distances)
-names(all_distances_top25_list) <- paste0("Cluster_", 1:optimal_k)
 
 distance_top25_df <- data.frame(
   distance = unlist(all_distances_top25_list),
-  cluster  = factor(rep(names(all_distances_top25_list),
-                        sapply(all_distances_top25_list, length)))
+  cluster  = factor(
+    rep(as.character(1:optimal_k), sapply(all_distances_top25_list, length)),
+    levels = as.character(1:optimal_k)
+  )
 )
 
 kw_test_top25 <- kruskal.test(distance ~ cluster, data = distance_top25_df)
@@ -1373,7 +1372,7 @@ p_bar_top25 <- ggplot(summary_peak_top25_table,
                 aes(x = factor(Cluster), y = Percent_With_Peak, fill = factor(Cluster))) +
   geom_bar(stat = "identity") +
   geom_text(aes(label = paste0(round(Percent_With_Peak, 1), "%")), vjust = -0.5, size = 4) +
-  scale_fill_brewer(palette = "Set3") +
+  scale_fill_manual(values = cluster_colors) +
   theme_bw() +
   theme(legend.position = "none") +
   labs(title = "Percentage of Genes with Top25 E2A-PBX1 Peaks within 1 Mb of TSS",
@@ -1386,7 +1385,7 @@ library(ggpubr)
 p_box_top25 <- ggplot(distance_top25_df,
                       aes(x = cluster, y = distance / 1000, fill = cluster)) +
   geom_boxplot(outlier.size = 0.5) +
-  scale_fill_brewer(palette = "Set3") +
+  scale_fill_manual(values = cluster_colors) +
   theme_bw() +
   theme(legend.position = "none",
         axis.text.x = element_text(angle = 45, hjust = 1)) +
@@ -1403,7 +1402,7 @@ p_violin_top25 <- ggplot(distance_top25_df,
                          aes(x = cluster, y = distance / 1000, fill = cluster)) +
   geom_violin(alpha = 0.6, trim = FALSE) +
   geom_boxplot(width = 0.15, outlier.shape = NA, alpha = 0.8) +
-  scale_fill_brewer(palette = "Set3") +
+  scale_fill_manual(values = cluster_colors) +
   theme_bw() +
   theme(legend.position = "none",
         axis.text.x = element_text(angle = 45, hjust = 1)) +
@@ -1456,7 +1455,7 @@ for (k in 1:optimal_k) {
 
 # Background: all DEGs
 cat("\n=== Background: All DEGs ===\n")
-all_deg_genes_bg  <- rownames(mat_all_deg_scaled)
+all_deg_genes_bg  <- rownames(mat_all_deg)
 background_gene_gr <- genes_gr[genes_gr$symbol %in% all_deg_genes_bg]
 background_promoters <- promoters(background_gene_gr, upstream = promoter_upstream,
                                    downstream = promoter_downstream)
@@ -1487,7 +1486,8 @@ homer_results_list <- list()
 for (k in 1:optimal_k) {
   file_path <- file.path(homer_dir, paste0("cluster_", k, "_DEGbg/knownResults.txt"))
   if (file.exists(file_path)) {
-    df <- read_tsv(file_path, comment = "#")
+    # Use base R reader (handles HOMER better)
+    df <- read.delim(file_path, check.names = FALSE)    
     df$Cluster <- k
     homer_results_list[[k]] <- df
   }
@@ -1498,10 +1498,6 @@ homer_combined <- bind_rows(homer_results_list)
 homer_combined <- homer_combined %>%
   mutate(Motif_Clean = gsub("\\(.*", "", `Motif Name`)) %>%
   mutate(Motif_Clean = trimws(Motif_Clean))
-
-homer_combined <- homer_combined %>%
-  rename(Percent_Target = `...6`)
-homer_combined$Percent_Target <- as.numeric(gsub("%", "", homer_combined$Percent_Target))
 
 cat("\n=== HOMER PROMOTER MOTIF VISUALIZATIONS ===\n\n")
 
@@ -1573,7 +1569,7 @@ print(cluster_enrichment_stats)
 p_cluster_summary <- ggplot(cluster_enrichment_stats, aes(x = factor(Cluster), y = n_significant, fill = factor(Cluster))) +
   geom_bar(stat = "identity") +
   geom_text(aes(label = n_significant), vjust = -0.5, size = 5, fontface = "bold") +
-  scale_fill_brewer(palette = "Set3") + theme_bw() + theme(legend.position = "none") +
+  scale_fill_manual(values = cluster_colors) + theme_bw() + theme(legend.position = "none") +
   labs(title = "Number of Significantly Enriched Motifs per Cluster",
        subtitle = "Count of motifs with p < 0.05", x = "Cluster", y = "Number of Significant Motifs")
 print(p_cluster_summary)
@@ -1730,7 +1726,7 @@ bg_all_file   <- file.path(homer_peaks_dir, "background_all_chip_peaks.bed")
 write.table(all_peaks_bed, bg_all_file, sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
 cat(paste0("Background A (all peaks): ", nrow(all_peaks_bed), " peaks\n"))
 
-all_deg_genes_bgc <- rownames(mat_all_deg_scaled)
+all_deg_genes_bgc <- rownames(mat_all_deg)
 all_deg_tss       <- tss_gr[tss_gr$symbol %in% all_deg_genes_bgc]
 hits_all_deg      <- distanceToNearest(all_deg_tss, peaks_gr, ignore.strand = TRUE)
 within_all_deg    <- mcols(hits_all_deg)$distance <= max_distance
@@ -1795,10 +1791,14 @@ homer_peaks_results_list <- list()
 
 for (k in 1:optimal_k) {
   file_path <- file.path(homer_peaks_dir, paste0("cluster_", k, "_chip_DEGbg/knownResults.txt"))
+  
   if (file.exists(file_path)) {
-    df <- read_tsv(file_path, comment = "#", show_col_types = FALSE)
+    # Use base R reader (handles HOMER better)
+    df <- read.delim(file_path, check.names = FALSE)
+    
     df$Cluster <- k
     homer_peaks_results_list[[k]] <- df
+    
     cat(paste0("Loaded cluster ", k, ": ", nrow(df), " motifs\n"))
   } else {
     cat(paste0("WARNING: File not found for cluster ", k, ": ", file_path, "\n"))
@@ -1809,10 +1809,9 @@ if (length(homer_peaks_results_list) == 0) {
   stop("No HOMER ChIP peak results found. Run HOMER first.")
 }
 
+# Combine
 homer_peaks_combined <- bind_rows(homer_peaks_results_list) %>%
-  mutate(Motif_Clean = trimws(gsub("\\(.*", "", `Motif Name`))) %>%
-  rename(Percent_Target = `...6`)
-homer_peaks_combined$Percent_Target <- as.numeric(gsub("%", "", homer_peaks_combined$Percent_Target))
+  mutate(Motif_Clean = trimws(gsub("\\(.*", "", `Motif Name`)))
 
 cat(paste0("Total motif-cluster rows: ", nrow(homer_peaks_combined), "\n"))
 
@@ -1880,7 +1879,7 @@ p_peaks_cluster_summary <- ggplot(cluster_peaks_enrichment_stats,
   aes(x = factor(Cluster), y = n_significant, fill = factor(Cluster))) +
   geom_bar(stat = "identity") +
   geom_text(aes(label = n_significant), vjust = -0.5, size = 5, fontface = "bold") +
-  scale_fill_brewer(palette = "Set3") + theme_bw() + theme(legend.position = "none") +
+  scale_fill_manual(values = cluster_colors) + theme_bw() + theme(legend.position = "none") +
   labs(title = "Significant Motifs per Cluster — ChIP Peaks",
        subtitle = "Count of motifs with p < 0.05", x = "Cluster", y = "Number of Significant Motifs")
 print(p_peaks_cluster_summary)
@@ -2001,7 +2000,7 @@ write.table(all_top25_peaks_bed, bg_all_top25_file, sep = "\t", quote = FALSE,
             row.names = FALSE, col.names = FALSE)
 cat(paste0("Background A (all top25 peaks): ", nrow(all_top25_peaks_bed), " peaks\n"))
 
-all_deg_genes_bgc_t25 <- rownames(mat_all_deg_scaled)
+all_deg_genes_bgc_t25 <- rownames(mat_all_deg)
 all_deg_tss_t25       <- tss_gr[tss_gr$symbol %in% all_deg_genes_bgc_t25]
 hits_all_deg_t25      <- distanceToNearest(all_deg_tss_t25, peaks_top25_gr, ignore.strand = TRUE)
 within_all_deg_t25    <- mcols(hits_all_deg_t25)$distance <= max_distance
@@ -2077,7 +2076,8 @@ for (k in 1:optimal_k) {
   file_path <- file.path(homer_chip_top25_dir,
                          paste0("cluster_", k, "_top25_chip_DEGbg/knownResults.txt"))
   if (file.exists(file_path)) {
-    df <- read_tsv(file_path, comment = "#")
+    # Use base R reader (handles HOMER better)
+    df <- read.delim(file_path, check.names = FALSE)
     df$Cluster <- k
     
     # Identify the % of Target Sequences column by name pattern
@@ -2201,7 +2201,7 @@ p_top25_cluster_summary <- ggplot(cluster_top25_enrichment_stats,
   aes(x = factor(Cluster), y = n_significant, fill = factor(Cluster))) +
   geom_bar(stat = "identity") +
   geom_text(aes(label = n_significant), vjust = -0.5, size = 5, fontface = "bold") +
-  scale_fill_brewer(palette = "Set3") +
+  scale_fill_manual(values = cluster_colors) +
   theme_bw() +
   theme(legend.position = "none") +
   labs(title = "Significant Motifs per Cluster — Top25 ChIP Peaks",
@@ -2294,9 +2294,9 @@ cat("\n=== TOP25 ChIP PEAK MOTIF VISUALIZATIONS COMPLETE — saved to Clusters/h
 ```{r Loop Anchor Gene Analysis, fig.width=12, fig.height=8}
 cat("\n=== LOOP ANCHOR GENE ANALYSIS ===\n\n")
 
-# loop_dir <- "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/loops/intersected_loops/gene_intersection"
+loop_dir <- "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/loops/intersected_loops/gene_intersection"
 
-loop_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/loops/intersected_loops/gene_intersection"
+# loop_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/loops/intersected_loops/gene_intersection"
 
 loop_files <- list(
   EP1_specific = list(
@@ -2636,8 +2636,8 @@ ggsave(file.path(loops_dir, "loop_anchor_counts_violin_specific_vs_shared.pdf"),
 ```
 
 ```{r Compartment intersection}
-data <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore/Comp_Analysis/files/cs_REH_merge.tab"
-# data <- "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore/Comp_Analysis/files/cs_REH_merge.tab"
+# data <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore/Comp_Analysis/files/cs_REH_merge.tab"
+data <- "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore/Comp_Analysis/files/cs_REH_merge.tab"
 
 cs_REH_merge <- read.table(data,
                             sep       = "\t",
@@ -2671,19 +2671,19 @@ bins_gr <- makeGRangesFromDataFrame(
 # ----------------------------------------------------------------------------
 # 2. Load gene annotation
 # ----------------------------------------------------------------------------
-genes_bed <- read.table("R:/R_STIK/xavi_scripts/genes_gencode.v28.bed",
-                        sep = "\t", header = FALSE,
-                        col.names = c("chrom", "start", "end", "strand",
-                                      "gene_name", "ID", "description")) %>%
-  select(chrom, start, end, gene_name) %>%
-  mutate(start = as.integer(start), end = as.integer(end))
-
-# genes_bed <- read.table("/ijc/LABS/STIK/RAW/xavi_scripts/genes_gencode.v28.bed",
+# genes_bed <- read.table("R:/R_STIK/xavi_scripts/genes_gencode.v28.bed",
 #                         sep = "\t", header = FALSE,
 #                         col.names = c("chrom", "start", "end", "strand",
 #                                       "gene_name", "ID", "description")) %>%
 #   select(chrom, start, end, gene_name) %>%
 #   mutate(start = as.integer(start), end = as.integer(end))
+
+genes_bed <- read.table("/ijc/LABS/STIK/RAW/xavi_scripts/genes_gencode.v28.bed",
+                        sep = "\t", header = FALSE,
+                        col.names = c("chrom", "start", "end", "strand",
+                                      "gene_name", "ID", "description")) %>%
+  select(chrom, start, end, gene_name) %>%
+  mutate(start = as.integer(start), end = as.integer(end))
 
 genes_gr <- makeGRangesFromDataFrame(genes_bed,
                                      seqnames.field     = "chrom",
