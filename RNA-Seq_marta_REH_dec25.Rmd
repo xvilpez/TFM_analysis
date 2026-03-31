@@ -7,8 +7,8 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
-knitr::opts_knit$set(root.dir ="/ijc/LABS/STIK/RAW/rna_seq/rnaseq_marta_REHAro_dec25") ### If I run it through OnDemand server
-# knitr::opts_knit$set(root.dir = "R:/R_STIK/rna_seq/rnaseq_marta_REHAro_dec25") ### If I run it in the workstation
+# knitr::opts_knit$set(root.dir ="/ijc/LABS/STIK/RAW/rna_seq/rnaseq_marta_REHAro_dec25") ### If I run it through OnDemand server
+knitr::opts_knit$set(root.dir = "R:/R_STIK/rna_seq/rnaseq_marta_REHAro_dec25") ### If I run it in the workstation
 ```
 
 ```{r initialization, warning=FALSE, message=FALSE}
@@ -918,6 +918,8 @@ aro_samples <- rownames(coldata)[coldata$condition == "Aro"]
 reh_samples <- rownames(coldata)[coldata$condition == "REH"]
 col_order   <- c(reh_samples, ep1_samples, aro_samples)
 
+mat_reordered <- mat_scaled[, col_order]
+
 # ── Cluster summary on z-scaled values ───────────────────────────────────
 cluster_stats <- data.frame(
   Cluster  = 1:optimal_k,
@@ -934,8 +936,7 @@ for (k in 1:optimal_k) {
 # Order clusters by mean REH z-score (descending: low-in-REH first)
 cluster_order <- order(cluster_stats$Mean_REH, decreasing = FALSE)
 
-mat_reordered <- mat_scaled[, col_order]
-
+#Order genes for display in heatmap according to the cluster ordered by REH z-score mean
 genes_ordered <- unlist(lapply(cluster_order, function(k) {
   names(clusters)[clusters == k]
 }))
@@ -1007,6 +1008,7 @@ write.table(
   sep = "\t", row.names = FALSE, quote = FALSE
 )
 cat("Cluster gene membership saved to Clusters/kmeans_cluster_gene_membership.tsv\n")
+print(cluster_stats)
 ```
 
 ```{r Cluster enrichment}
@@ -1070,11 +1072,9 @@ for (cluster_name in names(cluster_gene_lists)) {
 cat("\n=== ChIP-SEQ PEAK TO TSS DISTANCE ANALYSIS ===\n\n")
 
 library(GenomicRanges)
-library(TxDb.Hsapiens.UCSC.hg38.knownGene)
-library(org.Hs.eg.db)
 
-chip_path <- "/mnt/beegfs/xvilchez/chip_publicdata/697HF_E2APBX1-HF_peaks.bed"
-# chip_path <- "R:/R_STIK/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed"
+# chip_path <- "/mnt/beegfs/xvilchez/chip_publicdata/697HF_E2APBX1-HF_peaks.bed"
+chip_path <- "R:/R_STIK/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed"
 
 if (!file.exists(chip_path)) {
   stop("ChIP-seq peak file not found at: ", chip_path)
@@ -1090,19 +1090,18 @@ peaks_gr <- GRanges(
 
 cat(paste0("Loaded ", length(peaks_gr), " ChIP-seq peaks\n"))
 
-txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
-genes_gr <- genes(txdb)
+genes_bed <- read.table("R:/R_STIK/xavi_scripts/genes_gencode.v28.bed",
+                        sep = "\t", header = FALSE,
+                        col.names = c("chrom", "start", "end", "strand",
+                                      "gene_name", "ID", "description")) %>%
+  select(chrom, start, end, strand, gene_name) %>%
+  mutate(start = as.integer(start), end = as.integer(end))
 
-gene_symbols <- mapIds(
-  org.Hs.eg.db,
-  keys = names(genes_gr),
-  column = "SYMBOL",
-  keytype = "ENTREZID",
-  multiVals = "first"
-)
-
-genes_gr$symbol <- gene_symbols[names(genes_gr)]
-genes_gr <- genes_gr[!is.na(genes_gr$symbol)]
+genes_gr <- makeGRangesFromDataFrame(genes_bed,
+                                     seqnames.field     = "chrom",
+                                     strand.field       = "strand",
+                                     keep.extra.columns = TRUE)
+genes_gr$symbol <- genes_gr$gene_name
 
 cat(paste0("Loaded ", length(genes_gr), " genes with TSS coordinates\n\n"))
 
@@ -1258,8 +1257,8 @@ library(GenomicRanges)
 library(TxDb.Hsapiens.UCSC.hg38.knownGene)
 library(org.Hs.eg.db)
 
-chip_path_top25 <- "/mnt/beegfs/xvilchez/chip_publicdata/top25_697HF_E2APBX1-HF_peaks.bed"
-# chip_path_top25 <- "R:/R_STIK/chip_seq/Xavi_TFM/top25_697HF_E2APBX1-HF_peaks.bed"
+# chip_path_top25 <- "/mnt/beegfs/xvilchez/chip_publicdata/top25_697HF_E2APBX1-HF_peaks.bed"
+chip_path_top25 <- "R:/R_STIK/chip_seq/Xavi_TFM/top25_697HF_E2APBX1-HF_peaks.bed"
 
 if (!file.exists(chip_path_top25)) {
   stop("Top25 ChIP-seq peak file not found at: ", chip_path_top25)
@@ -2294,9 +2293,9 @@ cat("\n=== TOP25 ChIP PEAK MOTIF VISUALIZATIONS COMPLETE — saved to Clusters/h
 ```{r Loop Anchor Gene Analysis, fig.width=12, fig.height=8}
 cat("\n=== LOOP ANCHOR GENE ANALYSIS ===\n\n")
 
-loop_dir <- "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/loops/intersected_loops/gene_intersection"
+# loop_dir <- "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/loops/intersected_loops/gene_intersection"
 
-# loop_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/loops/intersected_loops/gene_intersection"
+loop_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/loops/intersected_loops/gene_intersection"
 
 loop_files <- list(
   EP1_specific = list(
@@ -2636,8 +2635,8 @@ ggsave(file.path(loops_dir, "loop_anchor_counts_violin_specific_vs_shared.pdf"),
 ```
 
 ```{r Compartment intersection}
-# data <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore/Comp_Analysis/files/cs_REH_merge.tab"
-data <- "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore/Comp_Analysis/files/cs_REH_merge.tab"
+data <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore/Comp_Analysis/files/cs_REH_merge.tab"
+# data <- "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore/Comp_Analysis/files/cs_REH_merge.tab"
 
 cs_REH_merge <- read.table(data,
                             sep       = "\t",
@@ -2669,28 +2668,7 @@ bins_gr <- makeGRangesFromDataFrame(
 )
 
 # ----------------------------------------------------------------------------
-# 2. Load gene annotation
-# ----------------------------------------------------------------------------
-# genes_bed <- read.table("R:/R_STIK/xavi_scripts/genes_gencode.v28.bed",
-#                         sep = "\t", header = FALSE,
-#                         col.names = c("chrom", "start", "end", "strand",
-#                                       "gene_name", "ID", "description")) %>%
-#   select(chrom, start, end, gene_name) %>%
-#   mutate(start = as.integer(start), end = as.integer(end))
-
-genes_bed <- read.table("/ijc/LABS/STIK/RAW/xavi_scripts/genes_gencode.v28.bed",
-                        sep = "\t", header = FALSE,
-                        col.names = c("chrom", "start", "end", "strand",
-                                      "gene_name", "ID", "description")) %>%
-  select(chrom, start, end, gene_name) %>%
-  mutate(start = as.integer(start), end = as.integer(end))
-
-genes_gr <- makeGRangesFromDataFrame(genes_bed,
-                                     seqnames.field     = "chrom",
-                                     keep.extra.columns = TRUE)
-
-# ----------------------------------------------------------------------------
-# 3. Overlap bins → genes
+# 2. Overlap bins → genes
 # ----------------------------------------------------------------------------
 hits <- findOverlaps(bins_gr, genes_gr)
 
@@ -2703,7 +2681,7 @@ cat("Unique genes overlapping all bins:", n_distinct(bin_gene_map$gene_name), "\
 cat("Classes present:", paste(levels(droplevels(bin_gene_map$switching)), collapse = ", "), "\n")
 
 # ----------------------------------------------------------------------------
-# 4. Build log2 normalized + batch-corrected + mean-centered matrix
+# 3. Build log2 normalized + batch-corrected + mean-centered matrix
 # ----------------------------------------------------------------------------
 mat_norm      <- counts(dds, normalized = TRUE)
 mat_log2      <- log2(mat_norm + 1)
@@ -2717,7 +2695,7 @@ mat_corrected <- removeBatchEffect(
 mat_centered <- t(scale(t(mat_corrected), center = TRUE, scale = FALSE))
 
 # ----------------------------------------------------------------------------
-# 5. Long format + condition labels
+# 4. Long format + condition labels
 # ----------------------------------------------------------------------------
 counts_long <- as.data.frame(mat_centered) %>%
   tibble::rownames_to_column("gene_name") %>%
@@ -2735,7 +2713,7 @@ counts_long <- as.data.frame(mat_centered) %>%
   )
 
 # ----------------------------------------------------------------------------
-# 6. Join with bin_gene_map → ALL compartment classes including A_A_A and B_B_B
+# 5. Join with bin_gene_map → ALL compartment classes including A_A_A and B_B_B
 # ----------------------------------------------------------------------------
 all_classes <- c("A_A_A", "B_B_B", "B_A_A", "B_B_A", "B_A_B", "A_B_B", "A_A_B", "A_B_A")
 
@@ -2747,7 +2725,7 @@ counts_comp <- bin_gene_map %>%
 cat("Genes in all compartment bins with count data:", n_distinct(counts_comp$gene_name), "\n")
 
 # ----------------------------------------------------------------------------
-# 7. Wilcoxon test per switching class: EP1 vs REH and Aro vs REH
+# 6. Wilcoxon test per switching class: EP1 vs REH and Aro vs REH
 #    On per-gene means per condition to avoid pseudo-replication
 # ----------------------------------------------------------------------------
 gene_means <- counts_comp %>%
@@ -2793,7 +2771,7 @@ write.table(wilcox_results,
             sep = "\t", row.names = FALSE, quote = FALSE)
 
 # ----------------------------------------------------------------------------
-# 8. Significance labels positioned above EP1 and Aro per facet
+# 7. Significance labels positioned above EP1 and Aro per facet
 # ----------------------------------------------------------------------------
 y_positions <- counts_comp %>%
   group_by(switching, condition) %>%
@@ -2810,7 +2788,7 @@ bracket_df <- wilcox_results %>%
   mutate(y_pos = y_max * 1.08)
 
 # ----------------------------------------------------------------------------
-# 9. Boxplot: condition on x-axis, faceted by switching class (all 8 classes)
+# 8. Boxplot: condition on x-axis, faceted by switching class (all 8 classes)
 # ----------------------------------------------------------------------------
 switching_colors <- c(
   "A_A_A" = "#1a1a1a",   # stable A → dark
