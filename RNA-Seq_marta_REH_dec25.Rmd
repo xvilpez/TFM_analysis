@@ -1041,7 +1041,7 @@ for (cluster_name in names(cluster_gene_lists)) {
         # Use shared helper: cleans terms + computes gene_ratio uniformly for all DBs
         enriched_processed <- process_enrichr_db(enriched_cluster[[db_idx]])
         
-        sig_terms <- subset(enriched_processed, Adjusted.P.value < 0.05)
+        sig_terms <- subset(enriched_processed, Adjusted.P.value < 0.1)
         if (nrow(sig_terms) > 0) {
           
           # Save gene lists + summary TSV using shared helper (handles ";" and "; " separators)
@@ -1254,7 +1254,6 @@ cat("\n=== CHIP ANALYSIS COMPLETE — plots saved to Clusters/ ===\n")
 cat("\n=== TOP25 ChIP-SEQ PEAK TO TSS DISTANCE ANALYSIS ===\n\n")
 
 library(GenomicRanges)
-library(TxDb.Hsapiens.UCSC.hg38.knownGene)
 library(org.Hs.eg.db)
 
 # chip_path_top25 <- "/mnt/beegfs/xvilchez/chip_publicdata/top25_697HF_E2APBX1-HF_peaks.bed"
@@ -1418,7 +1417,6 @@ cat("\n=== TOP25 CHIP ANALYSIS COMPLETE — plots saved to Clusters/ ===\n")
 cat("\n=== PREPARING DATA FOR HOMER MOTIF ANALYSIS ===\n\n")
 
 library(GenomicRanges)
-library(TxDb.Hsapiens.UCSC.hg38.knownGene)
 
 # Use the structured sub-folder defined at the top
 homer_dir <- homer_promoter_dir
@@ -1473,192 +1471,208 @@ write.table(background_deg_df, background_deg_file, sep = "\t", quote = FALSE,
 cat(paste0("  ", nrow(background_deg_df), " promoters -> background_all_DEGs.bed\n"))
 
 cat("\nHOMER BED files ready in: ", homer_dir, "\n")
+
+homer_promoter_ready <- any(file.exists(
+  file.path(homer_promoter_dir, paste0("cluster_", 1:optimal_k, "_DEGbg/knownResults.txt"))
+))
+cat(if (homer_promoter_ready) "HOMER promoter results found.\n" else 
+    "HOMER promoter results NOT found — visualization will be skipped.\n")
+
 ```
 
 ```{r HOMER Visualizations, fig.width=12, fig.height=10}
 
-library(dplyr)
-library(readr)
-
-homer_results_list <- list()
-
-for (k in 1:optimal_k) {
-  file_path <- file.path(homer_dir, paste0("cluster_", k, "_DEGbg/knownResults.txt"))
-  if (file.exists(file_path)) {
-    # Use base R reader (handles HOMER better)
-    df <- read.delim(file_path, check.names = FALSE)    
-    df$Cluster <- k
-    homer_results_list[[k]] <- df
+if (!homer_promoter_ready) {
+  message("Skipping HOMER promoter visualizations — results not yet available.")
+} else {
+  library(dplyr)
+  library(readr)
+  
+  homer_results_list <- list()
+  
+  for (k in 1:optimal_k) {
+    file_path <- file.path(homer_dir, paste0("cluster_", k, "_DEGbg/knownResults.txt"))
+    if (file.exists(file_path)) {
+      # Use base R reader (handles HOMER better)
+      df <- read.delim(file_path, check.names = FALSE)    
+      df$Cluster <- k
+      homer_results_list[[k]] <- df
+    }
   }
-}
-
-homer_combined <- bind_rows(homer_results_list)
-
-homer_combined <- homer_combined %>%
-  mutate(Motif_Clean = gsub("\\(.*", "", `Motif Name`)) %>%
-  mutate(Motif_Clean = trimws(Motif_Clean))
-
-cat("\n=== HOMER PROMOTER MOTIF VISUALIZATIONS ===\n\n")
-
-# 1. Heatmap
-significant_motifs <- homer_combined %>%
-  filter(`P-value` < 0.05) %>%
-  group_by(Motif_Clean) %>%
-  summarise(min_pval = min(`P-value`), n_clusters_sig = n(), .groups = "drop") %>%
-  arrange(min_pval) %>%
-  head(40) %>%
-  pull(Motif_Clean)
-
-if (length(significant_motifs) > 0) {
-  motif_matrix_improved <- homer_combined %>%
-    filter(Motif_Clean %in% significant_motifs) %>%
-    group_by(Motif_Clean, Cluster) %>%
-    slice_min(`P-value`, n = 1, with_ties = FALSE) %>%
-    ungroup() %>%
-    mutate(neg_log_p = pmin(-log10(`P-value`), 50)) %>%
-    select(Motif_Clean, Cluster, neg_log_p) %>%
-    pivot_wider(names_from = Cluster, values_from = neg_log_p, values_fill = 0)
   
-  motif_matrix_df <- as.data.frame(motif_matrix_improved)
-  rownames(motif_matrix_df) <- motif_matrix_df$Motif_Clean
-  motif_matrix_df$Motif_Clean <- NULL
-  motif_matrix_final <- as.matrix(motif_matrix_df)
-  motif_matrix_final <- motif_matrix_final[, order(as.numeric(colnames(motif_matrix_final)))]
+  homer_combined <- bind_rows(homer_results_list)
   
-  pdf(file.path(homer_promoter_dir, "motif_heatmap_promoters.pdf"), width = 12, height = 14)
-  pheatmap(motif_matrix_final, cluster_rows = TRUE, cluster_cols = FALSE,
-    color = colorRampPalette(c("white","yellow","orange","red","darkred"))(100),
-    main = "Top Enriched Motifs Across Clusters\n(-log10 P-value, only p<0.05)",
-    display_numbers = FALSE, fontsize_row = 7, fontsize_col = 11,
-    angle_col = 0, border_color = "grey90", cellwidth = 35, cellheight = 10,
-    breaks = seq(0, max(motif_matrix_final), length.out = 101))
-  dev.off()
-  pheatmap(motif_matrix_final, cluster_rows = TRUE, cluster_cols = FALSE,
-    color = colorRampPalette(c("white","yellow","orange","red","darkred"))(100),
-    main = "Top Enriched Motifs Across Clusters\n(-log10 P-value, only p<0.05)",
-    display_numbers = FALSE, fontsize_row = 7, fontsize_col = 11,
-    angle_col = 0, border_color = "grey90", cellwidth = 35, cellheight = 10,
-    breaks = seq(0, max(motif_matrix_final), length.out = 101))
+  homer_combined <- homer_combined %>%
+    mutate(Motif_Clean = gsub("\\(.*", "", `Motif Name`)) %>%
+    mutate(Motif_Clean = trimws(Motif_Clean))
+  
+  cat("\n=== HOMER PROMOTER MOTIF VISUALIZATIONS ===\n\n")
+  
+  # 1. Heatmap
+  significant_motifs <- homer_combined %>%
+    filter(`P-value` < 0.05) %>%
+    group_by(Motif_Clean) %>%
+    summarise(min_pval = min(`P-value`), n_clusters_sig = n(), .groups = "drop") %>%
+    arrange(min_pval) %>%
+    head(40) %>%
+    pull(Motif_Clean)
+  
+  if (length(significant_motifs) > 0) {
+    motif_matrix_improved <- homer_combined %>%
+      filter(Motif_Clean %in% significant_motifs) %>%
+      group_by(Motif_Clean, Cluster) %>%
+      slice_min(`P-value`, n = 1, with_ties = FALSE) %>%
+      ungroup() %>%
+      mutate(neg_log_p = pmin(-log10(`P-value`), 50)) %>%
+      select(Motif_Clean, Cluster, neg_log_p) %>%
+      pivot_wider(names_from = Cluster, values_from = neg_log_p, values_fill = 0)
+    
+    motif_matrix_df <- as.data.frame(motif_matrix_improved)
+    rownames(motif_matrix_df) <- motif_matrix_df$Motif_Clean
+    motif_matrix_df$Motif_Clean <- NULL
+    motif_matrix_final <- as.matrix(motif_matrix_df)
+    motif_matrix_final <- motif_matrix_final[, order(as.numeric(colnames(motif_matrix_final)))]
+    
+    pdf(file.path(homer_promoter_dir, "motif_heatmap_promoters.pdf"), width = 12, height = 14)
+    pheatmap(motif_matrix_final, cluster_rows = TRUE, cluster_cols = FALSE,
+      color = colorRampPalette(c("white","yellow","orange","red","darkred"))(100),
+      main = "Top Enriched Motifs Across Clusters\n(-log10 P-value, only p<0.05)",
+      display_numbers = FALSE, fontsize_row = 7, fontsize_col = 11,
+      angle_col = 0, border_color = "grey90", cellwidth = 35, cellheight = 10,
+      breaks = seq(0, max(motif_matrix_final), length.out = 101))
+    dev.off()
+    pheatmap(motif_matrix_final, cluster_rows = TRUE, cluster_cols = FALSE,
+      color = colorRampPalette(c("white","yellow","orange","red","darkred"))(100),
+      main = "Top Enriched Motifs Across Clusters\n(-log10 P-value, only p<0.05)",
+      display_numbers = FALSE, fontsize_row = 7, fontsize_col = 11,
+      angle_col = 0, border_color = "grey90", cellwidth = 35, cellheight = 10,
+      breaks = seq(0, max(motif_matrix_final), length.out = 101))
+  }
+  
+  # 2. Dot plot
+  top_motifs_per_cluster <- homer_combined %>%
+    group_by(Cluster) %>% arrange(`P-value`) %>% slice_head(n = 10) %>% ungroup() %>%
+    group_by(Motif_Clean, Cluster) %>% slice_min(`P-value`, n = 1, with_ties = FALSE) %>% ungroup()
+  
+  p_dot <- ggplot(top_motifs_per_cluster, aes(x = factor(Cluster), y = Motif_Clean)) +
+    geom_point(aes(size = -log10(`P-value`), color = -log10(`P-value`),
+                   alpha = ifelse(`P-value` < 0.05, 1, 0.3))) +
+    scale_size_continuous(range = c(1, 10), name = "-log10(P-value)") +
+    scale_color_gradient(low = "lightblue", high = "darkred", name = "-log10(P-value)") +
+    scale_alpha_identity() +
+    theme_bw() +
+    labs(title = "Top 10 Motifs Per Cluster (Dot Plot)", x = "Cluster", y = "Motif")
+  print(p_dot)
+  ggsave(file.path(homer_promoter_dir, "motif_dotplot_promoters.pdf"), p_dot, width = 12, height = 10)
+  
+  # 3. Cluster enrichment summary bar
+  cluster_enrichment_stats <- homer_combined %>%
+    group_by(Cluster) %>%
+    summarise(n_significant = sum(`P-value` < 0.05), n_very_significant = sum(`P-value` < 0.001),
+              median_pval = median(`P-value`), min_pval = min(`P-value`), .groups = "drop") %>%
+    arrange(desc(n_significant))
+  print(cluster_enrichment_stats)
+  
+  p_cluster_summary <- ggplot(cluster_enrichment_stats, aes(x = factor(Cluster), y = n_significant, fill = factor(Cluster))) +
+    geom_bar(stat = "identity") +
+    geom_text(aes(label = n_significant), vjust = -0.5, size = 5, fontface = "bold") +
+    scale_fill_manual(values = cluster_colors) + theme_bw() + theme(legend.position = "none") +
+    labs(title = "Number of Significantly Enriched Motifs per Cluster",
+         subtitle = "Count of motifs with p < 0.05", x = "Cluster", y = "Number of Significant Motifs")
+  print(p_cluster_summary)
+  ggsave(file.path(homer_promoter_dir, "motif_sig_count_per_cluster_promoters.pdf"), p_cluster_summary, width = 8, height = 6)
 }
-
-# 2. Dot plot
-top_motifs_per_cluster <- homer_combined %>%
-  group_by(Cluster) %>% arrange(`P-value`) %>% slice_head(n = 10) %>% ungroup() %>%
-  group_by(Motif_Clean, Cluster) %>% slice_min(`P-value`, n = 1, with_ties = FALSE) %>% ungroup()
-
-p_dot <- ggplot(top_motifs_per_cluster, aes(x = factor(Cluster), y = Motif_Clean)) +
-  geom_point(aes(size = -log10(`P-value`), color = -log10(`P-value`),
-                 alpha = ifelse(`P-value` < 0.05, 1, 0.3))) +
-  scale_size_continuous(range = c(1, 10), name = "-log10(P-value)") +
-  scale_color_gradient(low = "lightblue", high = "darkred", name = "-log10(P-value)") +
-  scale_alpha_identity() +
-  theme_bw() +
-  labs(title = "Top 10 Motifs Per Cluster (Dot Plot)", x = "Cluster", y = "Motif")
-print(p_dot)
-ggsave(file.path(homer_promoter_dir, "motif_dotplot_promoters.pdf"), p_dot, width = 12, height = 10)
-
-# 3. Cluster enrichment summary bar
-cluster_enrichment_stats <- homer_combined %>%
-  group_by(Cluster) %>%
-  summarise(n_significant = sum(`P-value` < 0.05), n_very_significant = sum(`P-value` < 0.001),
-            median_pval = median(`P-value`), min_pval = min(`P-value`), .groups = "drop") %>%
-  arrange(desc(n_significant))
-print(cluster_enrichment_stats)
-
-p_cluster_summary <- ggplot(cluster_enrichment_stats, aes(x = factor(Cluster), y = n_significant, fill = factor(Cluster))) +
-  geom_bar(stat = "identity") +
-  geom_text(aes(label = n_significant), vjust = -0.5, size = 5, fontface = "bold") +
-  scale_fill_manual(values = cluster_colors) + theme_bw() + theme(legend.position = "none") +
-  labs(title = "Number of Significantly Enriched Motifs per Cluster",
-       subtitle = "Count of motifs with p < 0.05", x = "Cluster", y = "Number of Significant Motifs")
-print(p_cluster_summary)
-ggsave(file.path(homer_promoter_dir, "motif_sig_count_per_cluster_promoters.pdf"), p_cluster_summary, width = 8, height = 6)
 ```
 
 ```{r TF-family-plots promoters, fig.width=10, fig.height=6}
-tf_families <- list(
-  "E2A/TCF" = c("E2A","TCF","E47","E12"),
-  "PBX"     = c("PBX1","PBX2","PBX3","PBX"),
-  "HOX"     = c("HOXA","HOXB","HOXC","HOXD","HOX"),
-  "MEIS"    = c("MEIS1","MEIS2","MEIS"),
-  "RUNX"    = c("RUNX","AML"),
-  "MYC"     = c("MYC","MYCN","MAX")
-)
-
-tf_family_enrichment <- list()
-for (family_name in names(tf_families)) {
-  patterns <- tf_families[[family_name]]
-  family_results <- homer_combined %>%
-    filter(grepl(paste(patterns, collapse = "|"), Motif_Clean, ignore.case = TRUE)) %>%
-    group_by(Cluster, Motif_Clean) %>% slice_min(`P-value`, n = 1, with_ties = FALSE) %>% ungroup() %>%
-    mutate(TF_Family = family_name, neg_log_p = -log10(`P-value`))
-  tf_family_enrichment[[family_name]] <- family_results
-}
-tf_family_combined <- bind_rows(tf_family_enrichment)
-
-tf_heatmap_plot <- NULL
-tf_dot_plot <- NULL
-
-if (nrow(tf_family_combined) > 0) {
-
-  # Create summary matrix for heatmap
-tf_summary <- tf_family_combined %>%
-  group_by(TF_Family, Cluster) %>%
-  summarise(max_neg_log_p = max(neg_log_p), .groups = "drop")
-
-tf_summary_matrix <- tf_summary %>%
-  pivot_wider(names_from = Cluster,
-              values_from = max_neg_log_p,
-              values_fill = 0) %>%
-  column_to_rownames("TF_Family") %>%
-  as.matrix()
-
-  # Save heatmap
-  pheatmap(tf_summary_matrix,
-           cluster_rows = FALSE, cluster_cols = FALSE,
-           color = colorRampPalette(c("white","pink","red","darkred"))(100),
-           main = "TF Family Enrichment Across Clusters\n(Max -log10 P-value per family)",
-           display_numbers = TRUE, number_format = "%.1f",
-           fontsize = 11, angle_col = 0,
-           cellwidth = 40, cellheight = 30,
-           filename = file.path(homer_promoter_dir, "TF_family_heatmap_promoters.pdf"),
-           width = 10, height = 6)
-
-  # Create heatmap object for display
-  tf_heatmap_plot <- pheatmap(tf_summary_matrix,
-                              cluster_rows = FALSE, cluster_cols = FALSE,
-                              color = colorRampPalette(c("white","pink","red","darkred"))(100),
-                              main = "TF Family Enrichment Across Clusters\n(Max -log10 P-value per family)",
-                              display_numbers = TRUE, number_format = "%.1f",
-                              fontsize = 11, angle_col = 0,
-                              cellwidth = 40, cellheight = 30)
-
-  tf_sig <- tf_family_combined %>% filter(`P-value` < 0.05)
-
-  if (nrow(tf_sig) > 0) {
-
-    tf_dot_plot <- ggplot(tf_sig,
-                          aes(x = factor(Cluster), y = TF_Family)) +
-      geom_point(aes(size = neg_log_p, color = neg_log_p)) +
-      scale_size_continuous(range = c(2, 12)) +
-      scale_color_gradient(low = "lightblue", high = "darkred") +
-      theme_bw() +
-      labs(title = "TF Family Enrichment by Cluster",
-           subtitle = "Only showing p < 0.05",
-           x = "Cluster", y = "TF Family")
-
-    ggsave(file.path(homer_promoter_dir,
-                     "TF_family_dotplot_promoters.pdf"),
-           tf_dot_plot, width = 8, height = 6)
+if (!homer_promoter_ready) {
+  message("Skipping HOMER promoter visualizations — results not yet available.")
+} else {
+    
+  tf_families <- list(
+    "E2A/TCF" = c("E2A","TCF","E47","E12"),
+    "PBX"     = c("PBX1","PBX2","PBX3","PBX"),
+    "HOX"     = c("HOXA","HOXB","HOXC","HOXD","HOX"),
+    "MEIS"    = c("MEIS1","MEIS2","MEIS"),
+    "RUNX"    = c("RUNX","AML"),
+    "MYC"     = c("MYC","MYCN","MAX")
+  )
+  
+  tf_family_enrichment <- list()
+  for (family_name in names(tf_families)) {
+    patterns <- tf_families[[family_name]]
+    family_results <- homer_combined %>%
+      filter(grepl(paste(patterns, collapse = "|"), Motif_Clean, ignore.case = TRUE)) %>%
+      group_by(Cluster, Motif_Clean) %>% slice_min(`P-value`, n = 1, with_ties = FALSE) %>% ungroup() %>%
+      mutate(TF_Family = family_name, neg_log_p = -log10(`P-value`))
+    tf_family_enrichment[[family_name]] <- family_results
   }
+  tf_family_combined <- bind_rows(tf_family_enrichment)
+  
+  tf_heatmap_plot <- NULL
+  tf_dot_plot <- NULL
+  
+  if (nrow(tf_family_combined) > 0) {
+  
+    # Create summary matrix for heatmap
+  tf_summary <- tf_family_combined %>%
+    group_by(TF_Family, Cluster) %>%
+    summarise(max_neg_log_p = max(neg_log_p), .groups = "drop")
+  
+  tf_summary_matrix <- tf_summary %>%
+    pivot_wider(names_from = Cluster,
+                values_from = max_neg_log_p,
+                values_fill = 0) %>%
+    column_to_rownames("TF_Family") %>%
+    as.matrix()
+  
+    # Save heatmap
+    pheatmap(tf_summary_matrix,
+             cluster_rows = FALSE, cluster_cols = FALSE,
+             color = colorRampPalette(c("white","pink","red","darkred"))(100),
+             main = "TF Family Enrichment Across Clusters\n(Max -log10 P-value per family)",
+             display_numbers = TRUE, number_format = "%.1f",
+             fontsize = 11, angle_col = 0,
+             cellwidth = 40, cellheight = 30,
+             filename = file.path(homer_promoter_dir, "TF_family_heatmap_promoters.pdf"),
+             width = 10, height = 6)
+  
+    # Create heatmap object for display
+    tf_heatmap_plot <- pheatmap(tf_summary_matrix,
+                                cluster_rows = FALSE, cluster_cols = FALSE,
+                                color = colorRampPalette(c("white","pink","red","darkred"))(100),
+                                main = "TF Family Enrichment Across Clusters\n(Max -log10 P-value per family)",
+                                display_numbers = TRUE, number_format = "%.1f",
+                                fontsize = 11, angle_col = 0,
+                                cellwidth = 40, cellheight = 30)
+  
+    tf_sig <- tf_family_combined %>% filter(`P-value` < 0.05)
+  
+    if (nrow(tf_sig) > 0) {
+  
+      tf_dot_plot <- ggplot(tf_sig,
+                            aes(x = factor(Cluster), y = TF_Family)) +
+        geom_point(aes(size = neg_log_p, color = neg_log_p)) +
+        scale_size_continuous(range = c(2, 12)) +
+        scale_color_gradient(low = "lightblue", high = "darkred") +
+        theme_bw() +
+        labs(title = "TF Family Enrichment by Cluster",
+             subtitle = "Only showing p < 0.05",
+             x = "Cluster", y = "TF Family")
+  
+      ggsave(file.path(homer_promoter_dir,
+                       "TF_family_dotplot_promoters.pdf"),
+             tf_dot_plot, width = 8, height = 6)
+    }
+  }
+  
+  # ---- PRINT OUTSIDE IF BLOCK ----
+  
+  if (!is.null(tf_heatmap_plot)) tf_heatmap_plot
+  if (!is.null(tf_dot_plot)) print(tf_dot_plot)
+  
+  cat("\n=== HOMER PROMOTER VISUALIZATIONS COMPLETE — saved to Clusters/homer_promoter_motifs/ ===\n")
 }
-
-# ---- PRINT OUTSIDE IF BLOCK ----
-
-if (!is.null(tf_heatmap_plot)) tf_heatmap_plot
-if (!is.null(tf_dot_plot)) print(tf_dot_plot)
-
-cat("\n=== HOMER PROMOTER VISUALIZATIONS COMPLETE — saved to Clusters/homer_promoter_motifs/ ===\n")
 ```
 
 ```{r HOMER Motif Analysis on ChIP Peaks Near Cluster TSS, fig.width=10, fig.height=8}
@@ -1774,169 +1788,182 @@ for (k in 1:optimal_k) {
 }
 cat("\n=== ChIP PEAK HOMER INPUT PREPARATION COMPLETE ===\n")
 cat(paste0("BED files saved to: ", homer_peaks_dir, "\n\n"))
+
+homer_chip_ready <- any(file.exists(
+  file.path(homer_chip_dir, paste0("cluster_", 1:optimal_k, "_chip_DEGbg/knownResults.txt"))
+))
+cat(if (homer_chip_ready) "HOMER ChIP results found.\n" else
+    "HOMER ChIP results NOT found — visualization will be skipped.\n")
 ```
 
 ```{r HOMER ChIP Peak Motif Visualizations, fig.width=12, fig.height=10}
 
 cat("\n=== HOMER ChIP PEAK MOTIF VISUALIZATIONS ===\n\n")
-
-library(dplyr)
-library(readr)
-library(ggplot2)
-library(tidyr)
-library(pheatmap)
-
-homer_peaks_results_list <- list()
-
-for (k in 1:optimal_k) {
-  file_path <- file.path(homer_peaks_dir, paste0("cluster_", k, "_chip_DEGbg/knownResults.txt"))
+if (!homer_chip_ready) {
+  message("Skipping HOMER ChIP peak visualizations — results not yet available.")
+} else {
+  library(dplyr)
+  library(readr)
+  library(ggplot2)
+  library(tidyr)
+  library(pheatmap)
   
-  if (file.exists(file_path)) {
-    # Use base R reader (handles HOMER better)
-    df <- read.delim(file_path, check.names = FALSE)
+  homer_peaks_results_list <- list()
+  
+  for (k in 1:optimal_k) {
+    file_path <- file.path(homer_peaks_dir, paste0("cluster_", k, "_chip_DEGbg/knownResults.txt"))
     
-    df$Cluster <- k
-    homer_peaks_results_list[[k]] <- df
-    
-    cat(paste0("Loaded cluster ", k, ": ", nrow(df), " motifs\n"))
-  } else {
-    cat(paste0("WARNING: File not found for cluster ", k, ": ", file_path, "\n"))
+    if (file.exists(file_path)) {
+      # Use base R reader (handles HOMER better)
+      df <- read.delim(file_path, check.names = FALSE)
+      
+      df$Cluster <- k
+      homer_peaks_results_list[[k]] <- df
+      
+      cat(paste0("Loaded cluster ", k, ": ", nrow(df), " motifs\n"))
+    } else {
+      cat(paste0("WARNING: File not found for cluster ", k, ": ", file_path, "\n"))
+    }
   }
-}
-
-if (length(homer_peaks_results_list) == 0) {
-  stop("No HOMER ChIP peak results found. Run HOMER first.")
-}
-
-# Combine
-homer_peaks_combined <- bind_rows(homer_peaks_results_list) %>%
-  mutate(Motif_Clean = trimws(gsub("\\(.*", "", `Motif Name`)))
-
-cat(paste0("Total motif-cluster rows: ", nrow(homer_peaks_combined), "\n"))
-
-# 1. Heatmap
-significant_motifs_peaks <- homer_peaks_combined %>%
-  filter(`P-value` < 0.05) %>%
-  group_by(Motif_Clean) %>%
-  summarise(min_pval = min(`P-value`), n_clusters_sig = n(), .groups = "drop") %>%
-  arrange(min_pval) %>% head(40) %>% pull(Motif_Clean)
-
-if (length(significant_motifs_peaks) > 0) {
-  motif_matrix_peaks <- homer_peaks_combined %>%
-    filter(Motif_Clean %in% significant_motifs_peaks) %>%
-    group_by(Motif_Clean, Cluster) %>% slice_min(`P-value`, n = 1, with_ties = FALSE) %>% ungroup() %>%
-    mutate(neg_log_p = pmin(-log10(`P-value`), 50)) %>%
-    select(Motif_Clean, Cluster, neg_log_p) %>%
-    pivot_wider(names_from = Cluster, values_from = neg_log_p, values_fill = 0)
   
-  motif_mat_df <- as.data.frame(motif_matrix_peaks)
-  rownames(motif_mat_df) <- motif_mat_df$Motif_Clean
-  motif_mat_df$Motif_Clean <- NULL
-  motif_mat_final <- as.matrix(motif_mat_df)
-  motif_mat_final <- motif_mat_final[, order(as.numeric(colnames(motif_mat_final)))]
+  if (length(homer_peaks_results_list) == 0) {
+    stop("No HOMER ChIP peak results found. Run HOMER first.")
+  }
   
-  pdf(file.path(homer_chip_dir, "motif_heatmap_chip_peaks.pdf"), width = 12, height = 14)
-  pheatmap(motif_mat_final, cluster_rows = TRUE, cluster_cols = FALSE,
-    color = colorRampPalette(c("white","yellow","orange","red","darkred"))(100),
-    main = "Top Enriched Motifs in ChIP Peaks Across Clusters\n(-log10 P-value, only p < 0.05)",
-    display_numbers = FALSE, fontsize_row = 7, fontsize_col = 11,
-    angle_col = 0, border_color = "grey90", cellwidth = 35, cellheight = 10,
-    breaks = seq(0, max(motif_mat_final), length.out = 101))
-  dev.off()
-  pheatmap(motif_mat_final, cluster_rows = TRUE, cluster_cols = FALSE,
-    color = colorRampPalette(c("white","yellow","orange","red","darkred"))(100),
-    main = "Top Enriched Motifs in ChIP Peaks Across Clusters\n(-log10 P-value, only p < 0.05)",
-    display_numbers = FALSE, fontsize_row = 7, fontsize_col = 11,
-    angle_col = 0, border_color = "grey90", cellwidth = 35, cellheight = 10,
-    breaks = seq(0, max(motif_mat_final), length.out = 101))
+  # Combine
+  homer_peaks_combined <- bind_rows(homer_peaks_results_list) %>%
+    mutate(Motif_Clean = trimws(gsub("\\(.*", "", `Motif Name`)))
+  
+  cat(paste0("Total motif-cluster rows: ", nrow(homer_peaks_combined), "\n"))
+  
+  # 1. Heatmap
+  significant_motifs_peaks <- homer_peaks_combined %>%
+    filter(`P-value` < 0.05) %>%
+    group_by(Motif_Clean) %>%
+    summarise(min_pval = min(`P-value`), n_clusters_sig = n(), .groups = "drop") %>%
+    arrange(min_pval) %>% head(40) %>% pull(Motif_Clean)
+  
+  if (length(significant_motifs_peaks) > 0) {
+    motif_matrix_peaks <- homer_peaks_combined %>%
+      filter(Motif_Clean %in% significant_motifs_peaks) %>%
+      group_by(Motif_Clean, Cluster) %>% slice_min(`P-value`, n = 1, with_ties = FALSE) %>% ungroup() %>%
+      mutate(neg_log_p = pmin(-log10(`P-value`), 50)) %>%
+      select(Motif_Clean, Cluster, neg_log_p) %>%
+      pivot_wider(names_from = Cluster, values_from = neg_log_p, values_fill = 0)
+    
+    motif_mat_df <- as.data.frame(motif_matrix_peaks)
+    rownames(motif_mat_df) <- motif_mat_df$Motif_Clean
+    motif_mat_df$Motif_Clean <- NULL
+    motif_mat_final <- as.matrix(motif_mat_df)
+    motif_mat_final <- motif_mat_final[, order(as.numeric(colnames(motif_mat_final)))]
+    
+    pdf(file.path(homer_chip_dir, "motif_heatmap_chip_peaks.pdf"), width = 12, height = 14)
+    pheatmap(motif_mat_final, cluster_rows = TRUE, cluster_cols = FALSE,
+      color = colorRampPalette(c("white","yellow","orange","red","darkred"))(100),
+      main = "Top Enriched Motifs in ChIP Peaks Across Clusters\n(-log10 P-value, only p < 0.05)",
+      display_numbers = FALSE, fontsize_row = 7, fontsize_col = 11,
+      angle_col = 0, border_color = "grey90", cellwidth = 35, cellheight = 10,
+      breaks = seq(0, max(motif_mat_final), length.out = 101))
+    dev.off()
+    pheatmap(motif_mat_final, cluster_rows = TRUE, cluster_cols = FALSE,
+      color = colorRampPalette(c("white","yellow","orange","red","darkred"))(100),
+      main = "Top Enriched Motifs in ChIP Peaks Across Clusters\n(-log10 P-value, only p < 0.05)",
+      display_numbers = FALSE, fontsize_row = 7, fontsize_col = 11,
+      angle_col = 0, border_color = "grey90", cellwidth = 35, cellheight = 10,
+      breaks = seq(0, max(motif_mat_final), length.out = 101))
+  }
+  
+  # 2. Dot plot
+  top_motifs_peaks <- homer_peaks_combined %>%
+    group_by(Cluster) %>% arrange(`P-value`) %>% slice_head(n = 10) %>% ungroup() %>%
+    group_by(Motif_Clean, Cluster) %>% slice_min(`P-value`, n = 1, with_ties = FALSE) %>% ungroup()
+  
+  p_peaks_dot <- ggplot(top_motifs_peaks, aes(x = factor(Cluster), y = Motif_Clean)) +
+    geom_point(aes(size = -log10(`P-value`), color = -log10(`P-value`),
+                   alpha = ifelse(`P-value` < 0.05, 1, 0.3))) +
+    scale_size_continuous(range = c(1, 10), name = "-log10(P-value)") +
+    scale_color_gradient(low = "lightblue", high = "darkred", name = "-log10(P-value)") +
+    scale_alpha_identity() + theme_bw() +
+    labs(title = "Top 10 Motifs Per Cluster — ChIP Peaks (Dot Plot)", x = "Cluster", y = "Motif")
+  print(p_peaks_dot)
+  ggsave(file.path(homer_chip_dir, "motif_dotplot_chip_peaks.pdf"), p_peaks_dot, width = 12, height = 10)
+  
+  # 3. Enrichment summary bar
+  cluster_peaks_enrichment_stats <- homer_peaks_combined %>%
+    group_by(Cluster) %>%
+    summarise(n_significant = sum(`P-value` < 0.05), n_very_significant = sum(`P-value` < 0.001),
+              median_pval = median(`P-value`), min_pval = min(`P-value`), .groups = "drop") %>%
+    arrange(desc(n_significant))
+  print(cluster_peaks_enrichment_stats)
+  
+  p_peaks_cluster_summary <- ggplot(cluster_peaks_enrichment_stats,
+    aes(x = factor(Cluster), y = n_significant, fill = factor(Cluster))) +
+    geom_bar(stat = "identity") +
+    geom_text(aes(label = n_significant), vjust = -0.5, size = 5, fontface = "bold") +
+    scale_fill_manual(values = cluster_colors) + theme_bw() + theme(legend.position = "none") +
+    labs(title = "Significant Motifs per Cluster — ChIP Peaks",
+         subtitle = "Count of motifs with p < 0.05", x = "Cluster", y = "Number of Significant Motifs")
+  print(p_peaks_cluster_summary)
+  ggsave(file.path(homer_chip_dir, "motif_sig_count_per_cluster_chip_peaks.pdf"),
+         p_peaks_cluster_summary, width = 8, height = 6)
 }
-
-# 2. Dot plot
-top_motifs_peaks <- homer_peaks_combined %>%
-  group_by(Cluster) %>% arrange(`P-value`) %>% slice_head(n = 10) %>% ungroup() %>%
-  group_by(Motif_Clean, Cluster) %>% slice_min(`P-value`, n = 1, with_ties = FALSE) %>% ungroup()
-
-p_peaks_dot <- ggplot(top_motifs_peaks, aes(x = factor(Cluster), y = Motif_Clean)) +
-  geom_point(aes(size = -log10(`P-value`), color = -log10(`P-value`),
-                 alpha = ifelse(`P-value` < 0.05, 1, 0.3))) +
-  scale_size_continuous(range = c(1, 10), name = "-log10(P-value)") +
-  scale_color_gradient(low = "lightblue", high = "darkred", name = "-log10(P-value)") +
-  scale_alpha_identity() + theme_bw() +
-  labs(title = "Top 10 Motifs Per Cluster — ChIP Peaks (Dot Plot)", x = "Cluster", y = "Motif")
-print(p_peaks_dot)
-ggsave(file.path(homer_chip_dir, "motif_dotplot_chip_peaks.pdf"), p_peaks_dot, width = 12, height = 10)
-
-# 3. Enrichment summary bar
-cluster_peaks_enrichment_stats <- homer_peaks_combined %>%
-  group_by(Cluster) %>%
-  summarise(n_significant = sum(`P-value` < 0.05), n_very_significant = sum(`P-value` < 0.001),
-            median_pval = median(`P-value`), min_pval = min(`P-value`), .groups = "drop") %>%
-  arrange(desc(n_significant))
-print(cluster_peaks_enrichment_stats)
-
-p_peaks_cluster_summary <- ggplot(cluster_peaks_enrichment_stats,
-  aes(x = factor(Cluster), y = n_significant, fill = factor(Cluster))) +
-  geom_bar(stat = "identity") +
-  geom_text(aes(label = n_significant), vjust = -0.5, size = 5, fontface = "bold") +
-  scale_fill_manual(values = cluster_colors) + theme_bw() + theme(legend.position = "none") +
-  labs(title = "Significant Motifs per Cluster — ChIP Peaks",
-       subtitle = "Count of motifs with p < 0.05", x = "Cluster", y = "Number of Significant Motifs")
-print(p_peaks_cluster_summary)
-ggsave(file.path(homer_chip_dir, "motif_sig_count_per_cluster_chip_peaks.pdf"),
-       p_peaks_cluster_summary, width = 8, height = 6)
 ```
 
 ```{r TF-Family Plots Chip-seq}
-tf_peaks_family_enrichment <- list()
-for (family_name in names(tf_families)) {
-  patterns <- tf_families[[family_name]]
-  family_results <- homer_peaks_combined %>%
-    filter(grepl(paste(patterns, collapse = "|"), Motif_Clean, ignore.case = TRUE)) %>%
-    group_by(Cluster, Motif_Clean) %>% slice_min(`P-value`, n = 1, with_ties = FALSE) %>% ungroup() %>%
-    mutate(TF_Family = family_name, neg_log_p = -log10(`P-value`))
-  tf_peaks_family_enrichment[[family_name]] <- family_results
-}
-tf_peaks_family_combined <- bind_rows(tf_peaks_family_enrichment)
-
-if (nrow(tf_peaks_family_combined) > 0) {
-  tf_peaks_summary <- tf_peaks_family_combined %>%
-    group_by(TF_Family, Cluster) %>%
-    summarise(max_enrichment = max(neg_log_p), n_motifs = n(), .groups = "drop") %>%
-    pivot_wider(names_from = Cluster, values_from = max_enrichment, values_fill = 0)
+if (!homer_chip_ready) {
+  message("Skipping HOMER ChIP peak visualizations — results not yet available.")
+} else {
+    tf_peaks_family_enrichment <- list()
+  for (family_name in names(tf_families)) {
+    patterns <- tf_families[[family_name]]
+    family_results <- homer_peaks_combined %>%
+      filter(grepl(paste(patterns, collapse = "|"), Motif_Clean, ignore.case = TRUE)) %>%
+      group_by(Cluster, Motif_Clean) %>% slice_min(`P-value`, n = 1, with_ties = FALSE) %>% ungroup() %>%
+      mutate(TF_Family = family_name, neg_log_p = -log10(`P-value`))
+    tf_peaks_family_enrichment[[family_name]] <- family_results
+  }
+  tf_peaks_family_combined <- bind_rows(tf_peaks_family_enrichment)
   
-  tf_peaks_mat <- as.data.frame(tf_peaks_summary)
-  rownames(tf_peaks_mat) <- tf_peaks_mat$TF_Family
-  tf_peaks_mat$TF_Family <- NULL
-  tf_peaks_mat$n_motifs  <- NULL
-  tf_peaks_mat <- as.matrix(tf_peaks_mat)
+  if (nrow(tf_peaks_family_combined) > 0) {
+    tf_peaks_summary <- tf_peaks_family_combined %>%
+      group_by(TF_Family, Cluster) %>%
+      summarise(max_enrichment = max(neg_log_p), n_motifs = n(), .groups = "drop") %>%
+      pivot_wider(names_from = Cluster, values_from = max_enrichment, values_fill = 0)
+    
+    tf_peaks_mat <- as.data.frame(tf_peaks_summary)
+    rownames(tf_peaks_mat) <- tf_peaks_mat$TF_Family
+    tf_peaks_mat$TF_Family <- NULL
+    tf_peaks_mat$n_motifs  <- NULL
+    tf_peaks_mat <- as.matrix(tf_peaks_mat)
+    
+      pdf(file.path(homer_chip_dir, "TF_family_heatmap_chip_peaks.pdf"), width = 12, height = 8)
+    pheatmap(tf_peaks_mat, cluster_rows = FALSE, cluster_cols = FALSE,
+      color = colorRampPalette(c("white","pink","red","darkred"))(100),
+      main = "TF Family Enrichment in ChIP Peaks Across Clusters\n(Max -log10 P-value per family)",
+      display_numbers = TRUE, number_format = "%.1f", fontsize = 11,
+      angle_col = 0, cellwidth = 40, cellheight = 30)
+    dev.off()
+    
+    pheatmap(tf_peaks_mat, cluster_rows = FALSE, cluster_cols = FALSE,
+      color = colorRampPalette(c("white","pink","red","darkred"))(100),
+      main = "TF Family Enrichment in ChIP Peaks Across Clusters\n(Max -log10 P-value per family)",
+      display_numbers = TRUE, number_format = "%.1f", fontsize = 11,
+      angle_col = 0, cellwidth = 40, cellheight = 30)
   
-    pdf(file.path(homer_chip_dir, "TF_family_heatmap_chip_peaks.pdf"), width = 12, height = 8)
-  pheatmap(tf_peaks_mat, cluster_rows = FALSE, cluster_cols = FALSE,
-    color = colorRampPalette(c("white","pink","red","darkred"))(100),
-    main = "TF Family Enrichment in ChIP Peaks Across Clusters\n(Max -log10 P-value per family)",
-    display_numbers = TRUE, number_format = "%.1f", fontsize = 11,
-    angle_col = 0, cellwidth = 40, cellheight = 30)
-  dev.off()
+    p_peaks_tf_dot <- ggplot(tf_peaks_family_combined %>% filter(`P-value` < 0.05),
+      aes(x = factor(Cluster), y = TF_Family)) +
+      geom_point(aes(size = neg_log_p, color = neg_log_p)) +
+      scale_size_continuous(range = c(2, 12), name = "-log10(P)") +
+      scale_color_gradient(low = "lightblue", high = "darkred", name = "-log10(P)") +
+      theme_bw() +
+      labs(title = "TF Family Enrichment in ChIP Peaks by Cluster",
+           subtitle = "Only showing p < 0.05", x = "Cluster", y = "TF Family")
+    print(p_peaks_tf_dot)
+    ggsave(file.path(homer_chip_dir, "TF_family_dotplot_chip_peaks.pdf"), p_peaks_tf_dot, width = 8, height = 6)
+  }
   
-  pheatmap(tf_peaks_mat, cluster_rows = FALSE, cluster_cols = FALSE,
-    color = colorRampPalette(c("white","pink","red","darkred"))(100),
-    main = "TF Family Enrichment in ChIP Peaks Across Clusters\n(Max -log10 P-value per family)",
-    display_numbers = TRUE, number_format = "%.1f", fontsize = 11,
-    angle_col = 0, cellwidth = 40, cellheight = 30)
-
-  p_peaks_tf_dot <- ggplot(tf_peaks_family_combined %>% filter(`P-value` < 0.05),
-    aes(x = factor(Cluster), y = TF_Family)) +
-    geom_point(aes(size = neg_log_p, color = neg_log_p)) +
-    scale_size_continuous(range = c(2, 12), name = "-log10(P)") +
-    scale_color_gradient(low = "lightblue", high = "darkred", name = "-log10(P)") +
-    theme_bw() +
-    labs(title = "TF Family Enrichment in ChIP Peaks by Cluster",
-         subtitle = "Only showing p < 0.05", x = "Cluster", y = "TF Family")
-  print(p_peaks_tf_dot)
-  ggsave(file.path(homer_chip_dir, "TF_family_dotplot_chip_peaks.pdf"), p_peaks_tf_dot, width = 8, height = 6)
-}
-
-cat("\n=== ChIP PEAK MOTIF VISUALIZATIONS COMPLETE — saved to Clusters/homer_chip_motifs/ ===\n\n")
+  cat("\n=== ChIP PEAK MOTIF VISUALIZATIONS COMPLETE — saved to Clusters/homer_chip_motifs/ ===\n\n")
+}  
 ```
 
 ```{r Top25 HOMER Motif Analysis on ChIP Peaks Near Cluster TSS, fig.width=10, fig.height=8}
@@ -2058,236 +2085,246 @@ for (k in 1:optimal_k) {
 }
 cat("\n=== TOP25 ChIP PEAK HOMER INPUT PREPARATION COMPLETE ===\n")
 cat(paste0("BED files saved to: ", homer_chip_top25_dir, "\n\n"))
+
+homer_top25_ready <- any(file.exists(
+  file.path(homer_chip_top25_dir, paste0("cluster_", 1:optimal_k, "_top25_chip_DEGbg/knownResults.txt"))
+))
+cat(if (homer_top25_ready) "HOMER top25 results found.\n" else
+    "HOMER top25 results NOT found — visualization will be skipped.\n")
 ```
 ```{r HOMER Top25 ChIP Peak Motif Visualizations, fig.width=12, fig.height=10}
 
 cat("\n=== HOMER TOP25 ChIP PEAK MOTIF VISUALIZATIONS ===\n\n")
 
-library(dplyr)
-library(readr)
-library(ggplot2)
-library(tidyr)
-library(pheatmap)
-
-homer_top25_results_list <- list()
-
-for (k in 1:optimal_k) {
-  file_path <- file.path(homer_chip_top25_dir,
-                         paste0("cluster_", k, "_top25_chip_DEGbg/knownResults.txt"))
-  if (file.exists(file_path)) {
-    # Use base R reader (handles HOMER better)
-    df <- read.delim(file_path, check.names = FALSE)
-    df$Cluster <- k
-    
-    # Identify the % of Target Sequences column by name pattern
-    pct_col <- grep("% of Target Sequences with Motif", colnames(df), value = TRUE)[1]
-    if (!is.na(pct_col)) {
-      df$Percent_Target <- as.numeric(gsub("%", "", df[[pct_col]]))
+if (!homer_top25_ready) {
+  message("Skipping HOMER top25 ChIP peak visualizations — results not yet available.")
+} else {
+  library(dplyr)
+  library(readr)
+  library(ggplot2)
+  library(tidyr)
+  library(pheatmap)
+  
+  homer_top25_results_list <- list()
+  
+  for (k in 1:optimal_k) {
+    file_path <- file.path(homer_chip_top25_dir,
+                           paste0("cluster_", k, "_top25_chip_DEGbg/knownResults.txt"))
+    if (file.exists(file_path)) {
+      # Use base R reader (handles HOMER better)
+      df <- read.delim(file_path, check.names = FALSE)
+      df$Cluster <- k
+      
+      # Identify the % of Target Sequences column by name pattern
+      pct_col <- grep("% of Target Sequences with Motif", colnames(df), value = TRUE)[1]
+      if (!is.na(pct_col)) {
+        df$Percent_Target <- as.numeric(gsub("%", "", df[[pct_col]]))
+      } else {
+        df$Percent_Target <- NA
+      }
+      
+      homer_top25_results_list[[k]] <- df
+      cat(paste0("Loaded cluster ", k, ": ", nrow(df), " motifs\n"))
     } else {
-      df$Percent_Target <- NA
+      cat(paste0("WARNING: File not found for cluster ", k, ": ", file_path, "\n"))
     }
-    
-    homer_top25_results_list[[k]] <- df
-    cat(paste0("Loaded cluster ", k, ": ", nrow(df), " motifs\n"))
-  } else {
-    cat(paste0("WARNING: File not found for cluster ", k, ": ", file_path, "\n"))
   }
-}
-
-if (length(homer_top25_results_list) == 0) {
-  stop("No HOMER top25 ChIP peak results found. Run HOMER first.")
-}
-
-homer_top25_combined <- bind_rows(homer_top25_results_list) %>%
-  mutate(Motif_Clean = trimws(gsub("\\(.*", "", `Motif Name`)))
-
-cat(paste0("Total motif-cluster rows: ", nrow(homer_top25_combined), "\n"))
-
-# ----------------------------------------------------------------------------
-# 1. Heatmap — top 40 most significant motifs
-# ----------------------------------------------------------------------------
-significant_motifs_top25 <- homer_top25_combined %>%
-  filter(`P-value` < 0.05) %>%
-  group_by(Motif_Clean) %>%
-  summarise(min_pval = min(`P-value`), n_clusters_sig = n(), .groups = "drop") %>%
-  arrange(min_pval) %>%
-  head(40) %>%
-  pull(Motif_Clean)
-
-if (length(significant_motifs_top25) > 0) {
-  motif_matrix_top25 <- homer_top25_combined %>%
-    filter(Motif_Clean %in% significant_motifs_top25) %>%
+  
+  if (length(homer_top25_results_list) == 0) {
+    stop("No HOMER top25 ChIP peak results found. Run HOMER first.")
+  }
+  
+  homer_top25_combined <- bind_rows(homer_top25_results_list) %>%
+    mutate(Motif_Clean = trimws(gsub("\\(.*", "", `Motif Name`)))
+  
+  cat(paste0("Total motif-cluster rows: ", nrow(homer_top25_combined), "\n"))
+  
+  # ----------------------------------------------------------------------------
+  # 1. Heatmap — top 40 most significant motifs
+  # ----------------------------------------------------------------------------
+  significant_motifs_top25 <- homer_top25_combined %>%
+    filter(`P-value` < 0.05) %>%
+    group_by(Motif_Clean) %>%
+    summarise(min_pval = min(`P-value`), n_clusters_sig = n(), .groups = "drop") %>%
+    arrange(min_pval) %>%
+    head(40) %>%
+    pull(Motif_Clean)
+  
+  if (length(significant_motifs_top25) > 0) {
+    motif_matrix_top25 <- homer_top25_combined %>%
+      filter(Motif_Clean %in% significant_motifs_top25) %>%
+      group_by(Motif_Clean, Cluster) %>%
+      slice_min(`P-value`, n = 1, with_ties = FALSE) %>%
+      ungroup() %>%
+      mutate(neg_log_p = pmin(-log10(`P-value`), 50)) %>%
+      select(Motif_Clean, Cluster, neg_log_p) %>%
+      pivot_wider(names_from = Cluster, values_from = neg_log_p, values_fill = 0)
+  
+    motif_mat_top25_df <- as.data.frame(motif_matrix_top25)
+    rownames(motif_mat_top25_df) <- motif_mat_top25_df$Motif_Clean
+    motif_mat_top25_df$Motif_Clean <- NULL
+    motif_mat_top25_final <- as.matrix(motif_mat_top25_df)
+    motif_mat_top25_final <- motif_mat_top25_final[,
+      order(as.numeric(colnames(motif_mat_top25_final)))]
+  
+    pdf(file.path(homer_chip_top25_dir, "motif_heatmap_chip_top25_peaks.pdf"),
+        width = 12, height = 14)
+    pheatmap(motif_mat_top25_final,
+      cluster_rows = TRUE, cluster_cols = FALSE,
+      color = colorRampPalette(c("white", "yellow", "orange", "red", "darkred"))(100),
+      main = "Top Enriched Motifs in Top25 ChIP Peaks Across Clusters\n(-log10 P-value, only p < 0.05)",
+      display_numbers = FALSE, fontsize_row = 7, fontsize_col = 11,
+      angle_col = 0, border_color = "grey90", cellwidth = 35, cellheight = 10,
+      breaks = seq(0, max(motif_mat_top25_final), length.out = 101))
+    dev.off()
+  
+    pheatmap(motif_mat_top25_final,
+      cluster_rows = TRUE, cluster_cols = FALSE,
+      color = colorRampPalette(c("white", "yellow", "orange", "red", "darkred"))(100),
+      main = "Top Enriched Motifs in Top25 ChIP Peaks Across Clusters\n(-log10 P-value, only p < 0.05)",
+      display_numbers = FALSE, fontsize_row = 7, fontsize_col = 11,
+      angle_col = 0, border_color = "grey90", cellwidth = 35, cellheight = 10,
+      breaks = seq(0, max(motif_mat_top25_final), length.out = 101))
+  } else {
+    cat("No significant motifs (p < 0.05) found across any cluster for top25 peaks.\n")
+  }
+  
+  # ----------------------------------------------------------------------------
+  # 2. Dot plot — top 10 motifs per cluster
+  # ----------------------------------------------------------------------------
+  top_motifs_top25 <- homer_top25_combined %>%
+    group_by(Cluster) %>%
+    arrange(`P-value`) %>%
+    slice_head(n = 10) %>%
+    ungroup() %>%
     group_by(Motif_Clean, Cluster) %>%
     slice_min(`P-value`, n = 1, with_ties = FALSE) %>%
-    ungroup() %>%
-    mutate(neg_log_p = pmin(-log10(`P-value`), 50)) %>%
-    select(Motif_Clean, Cluster, neg_log_p) %>%
-    pivot_wider(names_from = Cluster, values_from = neg_log_p, values_fill = 0)
-
-  motif_mat_top25_df <- as.data.frame(motif_matrix_top25)
-  rownames(motif_mat_top25_df) <- motif_mat_top25_df$Motif_Clean
-  motif_mat_top25_df$Motif_Clean <- NULL
-  motif_mat_top25_final <- as.matrix(motif_mat_top25_df)
-  motif_mat_top25_final <- motif_mat_top25_final[,
-    order(as.numeric(colnames(motif_mat_top25_final)))]
-
-  pdf(file.path(homer_chip_top25_dir, "motif_heatmap_chip_top25_peaks.pdf"),
-      width = 12, height = 14)
-  pheatmap(motif_mat_top25_final,
-    cluster_rows = TRUE, cluster_cols = FALSE,
-    color = colorRampPalette(c("white", "yellow", "orange", "red", "darkred"))(100),
-    main = "Top Enriched Motifs in Top25 ChIP Peaks Across Clusters\n(-log10 P-value, only p < 0.05)",
-    display_numbers = FALSE, fontsize_row = 7, fontsize_col = 11,
-    angle_col = 0, border_color = "grey90", cellwidth = 35, cellheight = 10,
-    breaks = seq(0, max(motif_mat_top25_final), length.out = 101))
-  dev.off()
-
-  pheatmap(motif_mat_top25_final,
-    cluster_rows = TRUE, cluster_cols = FALSE,
-    color = colorRampPalette(c("white", "yellow", "orange", "red", "darkred"))(100),
-    main = "Top Enriched Motifs in Top25 ChIP Peaks Across Clusters\n(-log10 P-value, only p < 0.05)",
-    display_numbers = FALSE, fontsize_row = 7, fontsize_col = 11,
-    angle_col = 0, border_color = "grey90", cellwidth = 35, cellheight = 10,
-    breaks = seq(0, max(motif_mat_top25_final), length.out = 101))
-} else {
-  cat("No significant motifs (p < 0.05) found across any cluster for top25 peaks.\n")
-}
-
-# ----------------------------------------------------------------------------
-# 2. Dot plot — top 10 motifs per cluster
-# ----------------------------------------------------------------------------
-top_motifs_top25 <- homer_top25_combined %>%
-  group_by(Cluster) %>%
-  arrange(`P-value`) %>%
-  slice_head(n = 10) %>%
-  ungroup() %>%
-  group_by(Motif_Clean, Cluster) %>%
-  slice_min(`P-value`, n = 1, with_ties = FALSE) %>%
-  ungroup()
-
-p_top25_dot <- ggplot(top_motifs_top25,
-                      aes(x = factor(Cluster), y = Motif_Clean)) +
-  geom_point(aes(size  = -log10(`P-value`),
-                 color = -log10(`P-value`),
-                 alpha = ifelse(`P-value` < 0.05, 1, 0.3))) +
-  scale_size_continuous(range = c(1, 10), name = "-log10(P-value)") +
-  scale_color_gradient(low = "lightblue", high = "darkred",
-                       name = "-log10(P-value)") +
-  scale_alpha_identity() +
-  theme_bw() +
-  labs(title = "Top 10 Motifs Per Cluster — Top25 ChIP Peaks (Dot Plot)",
-       x = "Cluster", y = "Motif")
-print(p_top25_dot)
-ggsave(file.path(homer_chip_top25_dir, "motif_dotplot_chip_top25_peaks.pdf"),
-       p_top25_dot, width = 12, height = 10)
-
-# ----------------------------------------------------------------------------
-# 3. Enrichment summary bar — significant motif counts per cluster
-# ----------------------------------------------------------------------------
-cluster_top25_enrichment_stats <- homer_top25_combined %>%
-  group_by(Cluster) %>%
-  summarise(
-    n_significant      = sum(`P-value` < 0.05),
-    n_very_significant = sum(`P-value` < 0.001),
-    median_pval        = median(`P-value`),
-    min_pval           = min(`P-value`),
-    .groups = "drop"
-  ) %>%
-  arrange(desc(n_significant))
-print(cluster_top25_enrichment_stats)
-
-p_top25_cluster_summary <- ggplot(cluster_top25_enrichment_stats,
-  aes(x = factor(Cluster), y = n_significant, fill = factor(Cluster))) +
-  geom_bar(stat = "identity") +
-  geom_text(aes(label = n_significant), vjust = -0.5, size = 5, fontface = "bold") +
-  scale_fill_manual(values = cluster_colors) +
-  theme_bw() +
-  theme(legend.position = "none") +
-  labs(title = "Significant Motifs per Cluster — Top25 ChIP Peaks",
-       subtitle = "Count of motifs with p < 0.05",
-       x = "Cluster", y = "Number of Significant Motifs")
-print(p_top25_cluster_summary)
-ggsave(file.path(homer_chip_top25_dir,
-                 "motif_sig_count_per_cluster_chip_top25_peaks.pdf"),
-       p_top25_cluster_summary, width = 8, height = 6)
-
-# ----------------------------------------------------------------------------
-# 4. TF-family heatmap and dot plot
-#    Reuses tf_families list defined in "TF-family-plots promoters"
-# ----------------------------------------------------------------------------
-tf_top25_family_enrichment <- list()
-
-for (family_name in names(tf_families)) {
-  patterns <- tf_families[[family_name]]
-  family_results <- homer_top25_combined %>%
-    filter(grepl(paste(patterns, collapse = "|"), Motif_Clean, ignore.case = TRUE)) %>%
-    group_by(Cluster, Motif_Clean) %>%
-    slice_min(`P-value`, n = 1, with_ties = FALSE) %>%
-    ungroup() %>%
-    mutate(TF_Family  = family_name,
-           neg_log_p  = -log10(`P-value`))
-  tf_top25_family_enrichment[[family_name]] <- family_results
-}
-
-tf_top25_family_combined <- bind_rows(tf_top25_family_enrichment)
-
-tf_top25_heatmap_plot <- NULL
-tf_top25_dot_plot     <- NULL
-
-if (nrow(tf_top25_family_combined) > 0) {
-
-  tf_top25_summary <- tf_top25_family_combined %>%
-    group_by(TF_Family, Cluster) %>%
-    summarise(max_neg_log_p = max(neg_log_p), .groups = "drop") %>%
-    pivot_wider(names_from  = Cluster,
-                values_from = max_neg_log_p,
-                values_fill = 0)
-
-  tf_top25_mat <- as.data.frame(tf_top25_summary)
-  rownames(tf_top25_mat) <- tf_top25_mat$TF_Family
-  tf_top25_mat$TF_Family <- NULL
-  tf_top25_mat <- as.matrix(tf_top25_mat)
-
-  pdf(file.path(homer_chip_top25_dir, "TF_family_heatmap_chip_top25_peaks.pdf"), width = 12, height = 8)
-  pheatmap(tf_top25_mat, cluster_rows = FALSE, cluster_cols = FALSE,
-    color = colorRampPalette(c("white","pink","red","darkred"))(100),
-    main = "TF Family Enrichment in Top25 ChIP Peaks Across Clusters\n(Max -log10 P-value per family)",
-    display_numbers = TRUE, number_format = "%.1f", fontsize = 11,
-    angle_col = 0, cellwidth = 40, cellheight = 30)
-  dev.off()
-
-  tf_top25_heatmap_plot <- pheatmap(tf_top25_mat,
-    cluster_rows = FALSE, cluster_cols = FALSE,
-    color = colorRampPalette(c("white", "pink", "red", "darkred"))(100),
-    main = "TF Family Enrichment in Top25 ChIP Peaks Across Clusters\n(Max -log10 P-value per family)",
-    display_numbers = TRUE, number_format = "%.1f",
-    fontsize = 11, angle_col = 0,
-    cellwidth = 40, cellheight = 30)
-
-  tf_top25_sig <- tf_top25_family_combined %>% filter(`P-value` < 0.05)
-
-  if (nrow(tf_top25_sig) > 0) {
-    tf_top25_dot_plot <- ggplot(tf_top25_sig,
-                                aes(x = factor(Cluster), y = TF_Family)) +
-      geom_point(aes(size = neg_log_p, color = neg_log_p)) +
-      scale_size_continuous(range = c(2, 12), name = "-log10(P)") +
-      scale_color_gradient(low = "lightblue", high = "darkred",
-                           name = "-log10(P)") +
-      theme_bw() +
-      labs(title = "TF Family Enrichment in Top25 ChIP Peaks by Cluster",
-           subtitle = "Only showing p < 0.05",
-           x = "Cluster", y = "TF Family")
-
-    ggsave(file.path(homer_chip_top25_dir,
-                     "TF_family_dotplot_chip_top25_peaks.pdf"),
-           tf_top25_dot_plot, width = 8, height = 6)
+    ungroup()
+  
+  p_top25_dot <- ggplot(top_motifs_top25,
+                        aes(x = factor(Cluster), y = Motif_Clean)) +
+    geom_point(aes(size  = -log10(`P-value`),
+                   color = -log10(`P-value`),
+                   alpha = ifelse(`P-value` < 0.05, 1, 0.3))) +
+    scale_size_continuous(range = c(1, 10), name = "-log10(P-value)") +
+    scale_color_gradient(low = "lightblue", high = "darkred",
+                         name = "-log10(P-value)") +
+    scale_alpha_identity() +
+    theme_bw() +
+    labs(title = "Top 10 Motifs Per Cluster — Top25 ChIP Peaks (Dot Plot)",
+         x = "Cluster", y = "Motif")
+  print(p_top25_dot)
+  ggsave(file.path(homer_chip_top25_dir, "motif_dotplot_chip_top25_peaks.pdf"),
+         p_top25_dot, width = 12, height = 10)
+  
+  # ----------------------------------------------------------------------------
+  # 3. Enrichment summary bar — significant motif counts per cluster
+  # ----------------------------------------------------------------------------
+  cluster_top25_enrichment_stats <- homer_top25_combined %>%
+    group_by(Cluster) %>%
+    summarise(
+      n_significant      = sum(`P-value` < 0.05),
+      n_very_significant = sum(`P-value` < 0.001),
+      median_pval        = median(`P-value`),
+      min_pval           = min(`P-value`),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(n_significant))
+  print(cluster_top25_enrichment_stats)
+  
+  p_top25_cluster_summary <- ggplot(cluster_top25_enrichment_stats,
+    aes(x = factor(Cluster), y = n_significant, fill = factor(Cluster))) +
+    geom_bar(stat = "identity") +
+    geom_text(aes(label = n_significant), vjust = -0.5, size = 5, fontface = "bold") +
+    scale_fill_manual(values = cluster_colors) +
+    theme_bw() +
+    theme(legend.position = "none") +
+    labs(title = "Significant Motifs per Cluster — Top25 ChIP Peaks",
+         subtitle = "Count of motifs with p < 0.05",
+         x = "Cluster", y = "Number of Significant Motifs")
+  print(p_top25_cluster_summary)
+  ggsave(file.path(homer_chip_top25_dir,
+                   "motif_sig_count_per_cluster_chip_top25_peaks.pdf"),
+         p_top25_cluster_summary, width = 8, height = 6)
+  
+  # ----------------------------------------------------------------------------
+  # 4. TF-family heatmap and dot plot
+  #    Reuses tf_families list defined in "TF-family-plots promoters"
+  # ----------------------------------------------------------------------------
+  tf_top25_family_enrichment <- list()
+  
+  for (family_name in names(tf_families)) {
+    patterns <- tf_families[[family_name]]
+    family_results <- homer_top25_combined %>%
+      filter(grepl(paste(patterns, collapse = "|"), Motif_Clean, ignore.case = TRUE)) %>%
+      group_by(Cluster, Motif_Clean) %>%
+      slice_min(`P-value`, n = 1, with_ties = FALSE) %>%
+      ungroup() %>%
+      mutate(TF_Family  = family_name,
+             neg_log_p  = -log10(`P-value`))
+    tf_top25_family_enrichment[[family_name]] <- family_results
   }
+  
+  tf_top25_family_combined <- bind_rows(tf_top25_family_enrichment)
+  
+  tf_top25_heatmap_plot <- NULL
+  tf_top25_dot_plot     <- NULL
+  
+  if (nrow(tf_top25_family_combined) > 0) {
+  
+    tf_top25_summary <- tf_top25_family_combined %>%
+      group_by(TF_Family, Cluster) %>%
+      summarise(max_neg_log_p = max(neg_log_p), .groups = "drop") %>%
+      pivot_wider(names_from  = Cluster,
+                  values_from = max_neg_log_p,
+                  values_fill = 0)
+  
+    tf_top25_mat <- as.data.frame(tf_top25_summary)
+    rownames(tf_top25_mat) <- tf_top25_mat$TF_Family
+    tf_top25_mat$TF_Family <- NULL
+    tf_top25_mat <- as.matrix(tf_top25_mat)
+  
+    pdf(file.path(homer_chip_top25_dir, "TF_family_heatmap_chip_top25_peaks.pdf"), width = 12, height = 8)
+    pheatmap(tf_top25_mat, cluster_rows = FALSE, cluster_cols = FALSE,
+      color = colorRampPalette(c("white","pink","red","darkred"))(100),
+      main = "TF Family Enrichment in Top25 ChIP Peaks Across Clusters\n(Max -log10 P-value per family)",
+      display_numbers = TRUE, number_format = "%.1f", fontsize = 11,
+      angle_col = 0, cellwidth = 40, cellheight = 30)
+    dev.off()
+  
+    tf_top25_heatmap_plot <- pheatmap(tf_top25_mat,
+      cluster_rows = FALSE, cluster_cols = FALSE,
+      color = colorRampPalette(c("white", "pink", "red", "darkred"))(100),
+      main = "TF Family Enrichment in Top25 ChIP Peaks Across Clusters\n(Max -log10 P-value per family)",
+      display_numbers = TRUE, number_format = "%.1f",
+      fontsize = 11, angle_col = 0,
+      cellwidth = 40, cellheight = 30)
+  
+    tf_top25_sig <- tf_top25_family_combined %>% filter(`P-value` < 0.05)
+  
+    if (nrow(tf_top25_sig) > 0) {
+      tf_top25_dot_plot <- ggplot(tf_top25_sig,
+                                  aes(x = factor(Cluster), y = TF_Family)) +
+        geom_point(aes(size = neg_log_p, color = neg_log_p)) +
+        scale_size_continuous(range = c(2, 12), name = "-log10(P)") +
+        scale_color_gradient(low = "lightblue", high = "darkred",
+                             name = "-log10(P)") +
+        theme_bw() +
+        labs(title = "TF Family Enrichment in Top25 ChIP Peaks by Cluster",
+             subtitle = "Only showing p < 0.05",
+             x = "Cluster", y = "TF Family")
+  
+      ggsave(file.path(homer_chip_top25_dir,
+                       "TF_family_dotplot_chip_top25_peaks.pdf"),
+             tf_top25_dot_plot, width = 8, height = 6)
+    }
+  }
+  
+  if (!is.null(tf_top25_heatmap_plot)) tf_top25_heatmap_plot
+  if (!is.null(tf_top25_dot_plot))     print(tf_top25_dot_plot)
+  
+  cat("\n=== TOP25 ChIP PEAK MOTIF VISUALIZATIONS COMPLETE — saved to Clusters/homer_chip_top25_motifs/ ===\n\n")
 }
-
-if (!is.null(tf_top25_heatmap_plot)) tf_top25_heatmap_plot
-if (!is.null(tf_top25_dot_plot))     print(tf_top25_dot_plot)
-
-cat("\n=== TOP25 ChIP PEAK MOTIF VISUALIZATIONS COMPLETE — saved to Clusters/homer_chip_top25_motifs/ ===\n\n")
 ```
 
 ```{r Loop Anchor Gene Analysis, fig.width=12, fig.height=8}
