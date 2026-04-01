@@ -1584,7 +1584,7 @@ if (!homer_promoter_ready) {
 }
 ```
 
-```{r TF-family-plots promoters, fig.width=10, fig.height=6}
+```{r TF-family-plots promoters, fig.width=10, fig.height=6, eval=FALSE}
 if (!homer_promoter_ready) {
   message("Skipping HOMER promoter visualizations — results not yet available.")
 } else {
@@ -1909,7 +1909,7 @@ if (!homer_chip_ready) {
 }
 ```
 
-```{r TF-Family Plots Chip-seq}
+```{r TF-Family Plots Chip-seq, eval=FALSE}
 if (!homer_chip_ready) {
   message("Skipping HOMER ChIP peak visualizations — results not yet available.")
 } else {
@@ -2247,81 +2247,81 @@ if (!homer_top25_ready) {
                    "motif_sig_count_per_cluster_chip_top25_peaks.pdf"),
          p_top25_cluster_summary, width = 8, height = 6)
   
-  # ----------------------------------------------------------------------------
-  # 4. TF-family heatmap and dot plot
-  #    Reuses tf_families list defined in "TF-family-plots promoters"
-  # ----------------------------------------------------------------------------
-  tf_top25_family_enrichment <- list()
-  
-  for (family_name in names(tf_families)) {
-    patterns <- tf_families[[family_name]]
-    family_results <- homer_top25_combined %>%
-      filter(grepl(paste(patterns, collapse = "|"), Motif_Clean, ignore.case = TRUE)) %>%
-      group_by(Cluster, Motif_Clean) %>%
-      slice_min(`P-value`, n = 1, with_ties = FALSE) %>%
-      ungroup() %>%
-      mutate(TF_Family  = family_name,
-             neg_log_p  = -log10(`P-value`))
-    tf_top25_family_enrichment[[family_name]] <- family_results
-  }
-  
-  tf_top25_family_combined <- bind_rows(tf_top25_family_enrichment)
-  
-  tf_top25_heatmap_plot <- NULL
-  tf_top25_dot_plot     <- NULL
-  
-  if (nrow(tf_top25_family_combined) > 0) {
-  
-    tf_top25_summary <- tf_top25_family_combined %>%
-      group_by(TF_Family, Cluster) %>%
-      summarise(max_neg_log_p = max(neg_log_p), .groups = "drop") %>%
-      pivot_wider(names_from  = Cluster,
-                  values_from = max_neg_log_p,
-                  values_fill = 0)
-  
-    tf_top25_mat <- as.data.frame(tf_top25_summary)
-    rownames(tf_top25_mat) <- tf_top25_mat$TF_Family
-    tf_top25_mat$TF_Family <- NULL
-    tf_top25_mat <- as.matrix(tf_top25_mat)
-  
-    pdf(file.path(homer_chip_top25_dir, "TF_family_heatmap_chip_top25_peaks.pdf"), width = 12, height = 8)
-    pheatmap(tf_top25_mat, cluster_rows = FALSE, cluster_cols = FALSE,
-      color = colorRampPalette(c("white","pink","red","darkred"))(100),
-      main = "TF Family Enrichment in Top25 ChIP Peaks Across Clusters\n(Max -log10 P-value per family)",
-      display_numbers = TRUE, number_format = "%.1f", fontsize = 11,
-      angle_col = 0, cellwidth = 40, cellheight = 30)
-    dev.off()
-  
-    tf_top25_heatmap_plot <- pheatmap(tf_top25_mat,
-      cluster_rows = FALSE, cluster_cols = FALSE,
-      color = colorRampPalette(c("white", "pink", "red", "darkred"))(100),
-      main = "TF Family Enrichment in Top25 ChIP Peaks Across Clusters\n(Max -log10 P-value per family)",
-      display_numbers = TRUE, number_format = "%.1f",
-      fontsize = 11, angle_col = 0,
-      cellwidth = 40, cellheight = 30)
-  
-    tf_top25_sig <- tf_top25_family_combined %>% filter(`P-value` < 0.05)
-  
-    if (nrow(tf_top25_sig) > 0) {
-      tf_top25_dot_plot <- ggplot(tf_top25_sig,
-                                  aes(x = factor(Cluster), y = TF_Family)) +
-        geom_point(aes(size = neg_log_p, color = neg_log_p)) +
-        scale_size_continuous(range = c(2, 12), name = "-log10(P)") +
-        scale_color_gradient(low = "lightblue", high = "darkred",
-                             name = "-log10(P)") +
-        theme_bw() +
-        labs(title = "TF Family Enrichment in Top25 ChIP Peaks by Cluster",
-             subtitle = "Only showing p < 0.05",
-             x = "Cluster", y = "TF Family")
-  
-      ggsave(file.path(homer_chip_top25_dir,
-                       "TF_family_dotplot_chip_top25_peaks.pdf"),
-             tf_top25_dot_plot, width = 8, height = 6)
-    }
-  }
-  
-  if (!is.null(tf_top25_heatmap_plot)) tf_top25_heatmap_plot
-  if (!is.null(tf_top25_dot_plot))     print(tf_top25_dot_plot)
+  # # ----------------------------------------------------------------------------
+  # # 4. TF-family heatmap and dot plot
+  # #    Reuses tf_families list defined in "TF-family-plots promoters"
+  # # ----------------------------------------------------------------------------
+  # tf_top25_family_enrichment <- list()
+  # 
+  # for (family_name in names(tf_families)) {
+  #   patterns <- tf_families[[family_name]]
+  #   family_results <- homer_top25_combined %>%
+  #     filter(grepl(paste(patterns, collapse = "|"), Motif_Clean, ignore.case = TRUE)) %>%
+  #     group_by(Cluster, Motif_Clean) %>%
+  #     slice_min(`P-value`, n = 1, with_ties = FALSE) %>%
+  #     ungroup() %>%
+  #     mutate(TF_Family  = family_name,
+  #            neg_log_p  = -log10(`P-value`))
+  #   tf_top25_family_enrichment[[family_name]] <- family_results
+  # }
+  # 
+  # tf_top25_family_combined <- bind_rows(tf_top25_family_enrichment)
+  # 
+  # tf_top25_heatmap_plot <- NULL
+  # tf_top25_dot_plot     <- NULL
+  # 
+  # if (nrow(tf_top25_family_combined) > 0) {
+  # 
+  #   tf_top25_summary <- tf_top25_family_combined %>%
+  #     group_by(TF_Family, Cluster) %>%
+  #     summarise(max_neg_log_p = max(neg_log_p), .groups = "drop") %>%
+  #     pivot_wider(names_from  = Cluster,
+  #                 values_from = max_neg_log_p,
+  #                 values_fill = 0)
+  # 
+  #   tf_top25_mat <- as.data.frame(tf_top25_summary)
+  #   rownames(tf_top25_mat) <- tf_top25_mat$TF_Family
+  #   tf_top25_mat$TF_Family <- NULL
+  #   tf_top25_mat <- as.matrix(tf_top25_mat)
+  # 
+  #   pdf(file.path(homer_chip_top25_dir, "TF_family_heatmap_chip_top25_peaks.pdf"), width = 12, height = 8)
+  #   pheatmap(tf_top25_mat, cluster_rows = FALSE, cluster_cols = FALSE,
+  #     color = colorRampPalette(c("white","pink","red","darkred"))(100),
+  #     main = "TF Family Enrichment in Top25 ChIP Peaks Across Clusters\n(Max -log10 P-value per family)",
+  #     display_numbers = TRUE, number_format = "%.1f", fontsize = 11,
+  #     angle_col = 0, cellwidth = 40, cellheight = 30)
+  #   dev.off()
+  # 
+  #   tf_top25_heatmap_plot <- pheatmap(tf_top25_mat,
+  #     cluster_rows = FALSE, cluster_cols = FALSE,
+  #     color = colorRampPalette(c("white", "pink", "red", "darkred"))(100),
+  #     main = "TF Family Enrichment in Top25 ChIP Peaks Across Clusters\n(Max -log10 P-value per family)",
+  #     display_numbers = TRUE, number_format = "%.1f",
+  #     fontsize = 11, angle_col = 0,
+  #     cellwidth = 40, cellheight = 30)
+  # 
+  #   tf_top25_sig <- tf_top25_family_combined %>% filter(`P-value` < 0.05)
+  # 
+  #   if (nrow(tf_top25_sig) > 0) {
+  #     tf_top25_dot_plot <- ggplot(tf_top25_sig,
+  #                                 aes(x = factor(Cluster), y = TF_Family)) +
+  #       geom_point(aes(size = neg_log_p, color = neg_log_p)) +
+  #       scale_size_continuous(range = c(2, 12), name = "-log10(P)") +
+  #       scale_color_gradient(low = "lightblue", high = "darkred",
+  #                            name = "-log10(P)") +
+  #       theme_bw() +
+  #       labs(title = "TF Family Enrichment in Top25 ChIP Peaks by Cluster",
+  #            subtitle = "Only showing p < 0.05",
+  #            x = "Cluster", y = "TF Family")
+  # 
+  #     ggsave(file.path(homer_chip_top25_dir,
+  #                      "TF_family_dotplot_chip_top25_peaks.pdf"),
+  #            tf_top25_dot_plot, width = 8, height = 6)
+  #   }
+  # }
+  # 
+  # if (!is.null(tf_top25_heatmap_plot)) tf_top25_heatmap_plot
+  # if (!is.null(tf_top25_dot_plot))     print(tf_top25_dot_plot)
   
   cat("\n=== TOP25 ChIP PEAK MOTIF VISUALIZATIONS COMPLETE — saved to Clusters/homer_chip_top25_motifs/ ===\n\n")
 }
@@ -2588,7 +2588,7 @@ p1 <- ggplot(
     panel.grid.minor = element_blank()
   ) +
   xlab("Condition") +
-  ylab("|Log2 normalized counts| (batch-corrected, mean-centered)") +
+  ylab("Log2 normalized counts (batch-corrected, mean-centered)") +
   labs(title = "Gene expression at loop anchors per loop category")
 
 print(p1)
@@ -2663,7 +2663,7 @@ p2 <- ggplot(
     panel.grid.minor = element_blank()
   ) +
   xlab("Condition") +
-  ylab("|Log2 normalized counts| (batch-corrected, mean-centered)") +
+  ylab("Log2 normalized counts (batch-corrected, mean-centered)") +
   labs(title = "Expression at loop anchors: specific vs shared")
 
 print(p2)
