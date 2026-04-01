@@ -2735,7 +2735,7 @@ for (loop_name in names(loop_files)) {
 cat(paste0("Total unique loop anchor intervals: ", n_loops_to_sample, "\n"))
 
 # ── 3. Sample matched number of random 30 kb regions from hg38 ───────────────
-interval_size  <- 30000L
+interval_size <- 30000L
 set.seed(42)
 
 canonical_chrs <- paste0("chr", c(1:22, "X", "Y"))
@@ -2767,48 +2767,85 @@ random_genes <- unique(genes_gr$gene_name[subjectHits(hits_random)])
 random_genes <- random_genes[!random_genes %in% all_loop_genes]
 cat(paste0("Unique genes in random regions (not in loops): ", length(random_genes), "\n\n"))
 
-# ── 5. Get ONE mean expression value per gene (averaged across samples) ───────
-# Use batch-corrected log2 matrix already in memory
-loop_means <- rowMeans(mat_corrected[all_loop_genes[all_loop_genes %in% rownames(mat_corrected)], ])
-random_means <- rowMeans(mat_corrected[random_genes[random_genes %in% rownames(mat_corrected)], ])
+# ── 5. Build long-format data matching the loop anchor chunk style ────────────
+# One row per gene × sample, with condition label
+loop_long <- counts_long %>%
+  filter(gene_name %in% all_loop_genes) %>%
+  mutate(group = "Loop anchors")
 
-compare_df <- data.frame(
-  mean_expr = c(loop_means, random_means),
-  group     = factor(
-    c(rep("Loop anchors", length(loop_means)),
-      rep("Random regions", length(random_means))),
-    levels = c("Random regions", "Loop anchors")
+random_long <- counts_long %>%
+  filter(gene_name %in% random_genes) %>%
+  mutate(group = "Random regions")
+
+compare_long <- bind_rows(loop_long, random_long) %>%
+  mutate(
+    group     = factor(group, levels = c("Loop anchors", "Random regions")),
+    condition = factor(condition, levels = c("REH", "EP1", "Aro"))
   )
-)
 
-cat(paste0("Genes in loop anchor group: ",  length(loop_means),   "\n"))
-cat(paste0("Genes in random region group: ", length(random_means), "\n\n"))
+cat(paste0("Loop anchor genes matched in matrix:   ",
+           n_distinct(loop_long$gene_name), "\n"))
+cat(paste0("Random region genes matched in matrix: ",
+           n_distinct(random_long$gene_name), "\n\n"))
 
-# ── 6. Wilcoxon test ──────────────────────────────────────────────────────────
-wt <- wilcox.test(
-  compare_df$mean_expr[compare_df$group == "Loop anchors"],
-  compare_df$mean_expr[compare_df$group == "Random regions"]
-)
-cat(paste0("Wilcoxon p-value: ", formatC(wt$p.value, format = "e", digits = 3), "\n"))
+# ── 6. Per-gene means per condition (avoid pseudo-replication) ────────────────
+gene_means_comp <- compare_long %>%
+  group_by(group, gene_name, condition) %>%
+  summarise(mean_log2 = mean(log2_centered, na.rm = TRUE), .groups = "drop")
 
-sig <- case_when(
-  wt$p.value < 0.001 ~ "***",
-  wt$p.value < 0.01  ~ "**",
-  wt$p.value < 0.05  ~ "*",
-  TRUE               ~ "ns"
-)
-
-y_sig <- max(compare_df$mean_expr, na.rm = TRUE) * 1.05
-
-# ── 7. Summary stats ──────────────────────────────────────────────────────────
-summary_comp <- compare_df %>%
+# ── 7. Wilcoxon tests: EP1 vs REH and Aro vs REH, within each group ──────────
+wilcox_comp <- gene_means_comp %>%
   group_by(group) %>%
   summarise(
-    n        = n(),
-    mean     = round(mean(mean_expr,   na.rm = TRUE), 4),
-    median   = round(median(mean_expr, na.rm = TRUE), 4),
-    sd       = round(sd(mean_expr,     na.rm = TRUE), 4),
-    .groups  = "drop"
+    p_EP1_vs_REH = {
+      x <- mean_log2[condition == "EP1"]
+      y <- mean_log2[condition == "REH"]
+      if (length(x) >= 3 & length(y) >= 3) wilcox.test(x, y)$p.value else NA_real_
+    },
+    p_Aro_vs_REH = {
+      x <- mean_log2[condition == "Aro"]
+      y <- mean_log2[condition == "REH"]
+      if (length(x) >= 3 & length(y) >= 3) wilcox.test(x, y)$p.value else NA_real_
+    },
+    .groups = "drop"
+  ) %>%
+  mutate(
+    padj_EP1_vs_REH = p.adjust(p_EP1_vs_REH, method = "BH"),
+    padj_Aro_vs_REH = p.adjust(p_Aro_vs_REH, method = "BH"),
+    sig_EP1         = sig_label(padj_EP1_vs_REH),
+    sig_Aro         = sig_label(padj_Aro_vs_REH)
+  )
+
+cat("=== Wilcoxon tests: EP1 vs REH and Aro vs REH (BH-adjusted) ===\n")
+print(wilcox_comp)
+write.table(wilcox_comp,
+            file.path(loops_dir, "wilcoxon_loop_vs_random_by_condition.tsv"),
+            sep = "\t", row.names = FALSE, quote = FALSE)
+
+# ── 8. Significance label y-positions ────────────────────────────────────────
+y_positions_comp <- compare_long %>%
+  group_by(group, condition) %>%
+  summarise(y_max = max(log2_centered, na.rm = TRUE), .groups = "drop")
+
+bracket_comp <- wilcox_comp %>%
+  pivot_longer(cols = c(sig_EP1, sig_Aro), names_to = "which", values_to = "sig") %>%
+  filter(sig != "ns") %>%
+  mutate(
+    condition = factor(recode(which, "sig_EP1" = "EP1", "sig_Aro" = "Aro"),
+                       levels = c("REH", "EP1", "Aro"))
+  ) %>%
+  left_join(y_positions_comp, by = c("group", "condition")) %>%
+  mutate(y_pos = y_max * 1.08)
+
+# ── 9. Summary stats ──────────────────────────────────────────────────────────
+summary_comp <- gene_means_comp %>%
+  group_by(group, condition) %>%
+  summarise(
+    n_genes = n_distinct(gene_name),
+    mean    = round(mean(mean_log2,   na.rm = TRUE), 4),
+    median  = round(median(mean_log2, na.rm = TRUE), 4),
+    sd      = round(sd(mean_log2,     na.rm = TRUE), 4),
+    .groups = "drop"
   )
 cat("\n=== Summary statistics ===\n")
 print(summary_comp)
@@ -2816,70 +2853,58 @@ write.table(summary_comp,
             file.path(loops_dir, "loop_vs_random_summary_stats.tsv"),
             sep = "\t", row.names = FALSE, quote = FALSE)
 
-group_fills <- c("Loop anchors"   = "#7B3F9E",
-                 "Random regions" = "#B0B0B0")
-
-# ── 8. Violin + boxplot ───────────────────────────────────────────────────────
-p_violin <- ggplot(compare_df, aes(x = group, y = mean_expr, fill = group)) +
-  geom_violin(trim = FALSE, alpha = 0.7, linewidth = 0.4) +
-  geom_boxplot(width = 0.12, outlier.shape = NA, linewidth = 0.35, alpha = 0.9) +
-  annotate("segment",
-           x = 1, xend = 2,
-           y = y_sig, yend = y_sig,
-           linewidth = 0.5, color = "gray30") +
-  annotate("text",
-           x = 1.5, y = y_sig * 1.02,
-           label = sig, size = 6, fontface = "bold", color = "gray20") +
-  scale_fill_manual(values = group_fills) +
+# ── 10. Violin + Boxplot: condition on x-axis, faceted by group ──────────────
+p_box <- ggplot(
+  compare_long,
+  aes(x = condition, y = log2_centered, fill = condition)
+) +
+  geom_violin(
+    alpha     = 0.4,
+    linewidth = 0.3,
+    trim      = FALSE
+  ) +
+  geom_boxplot(
+    width         = 0.25,
+    outlier.size  = 0.4,
+    outlier.alpha = 0.3,
+    alpha         = 0.8,
+    linewidth     = 0.4
+  ) +
+  {if (nrow(bracket_comp) > 0)
+    geom_text(
+      data        = bracket_comp,
+      aes(x       = condition, y = y_pos, label = sig),
+      size        = 5,
+      fontface    = "bold",
+      color       = "gray20",
+      inherit.aes = FALSE
+    )
+  } +
+  scale_fill_manual(values = condition_colors) +
+  facet_wrap(~ group, nrow = 1) +
   theme_bw() +
   theme(
+    axis.text.x      = element_text(angle = 45, hjust = 1, size = 11),
+    axis.title       = element_text(size = 12),
+    plot.title       = element_text(hjust = 0.5, face = "bold", size = 13),
+    strip.text       = element_text(face = "bold", size = 11),
+    strip.background = element_rect(fill = "grey95", color = "black"),
     legend.position  = "none",
-    axis.title       = element_text(size = 13),
-    axis.text        = element_text(size = 12),
     panel.grid.minor = element_blank()
   ) +
-  xlab(NULL) +
-  ylab("Mean log2 normalized counts\n(batch-corrected)") +
+  xlab("Condition") +
+  ylab("Log2 normalized counts (batch-corrected, mean-centred)") +
   labs(
     title    = "Gene expression: loop anchors vs random 30 kb regions",
     subtitle = paste0(
-      "Loop: ", length(loop_means), " genes  |  ",
-      "Random: ", length(random_means), " genes  |  ",
-      "Wilcoxon p = ", formatC(wt$p.value, format = "e", digits = 2)
+      "Loop anchor genes: ", n_distinct(loop_long$gene_name),
+      "  |  Random region genes: ", n_distinct(random_long$gene_name)
     )
   )
 
-print(p_violin)
-ggsave(file.path(loops_dir, "loop_vs_random_violin_collapsed.pdf"),
-       p_violin, width = 7, height = 7)
-
-# ── 9. Density plot ───────────────────────────────────────────────────────────
-p_density <- ggplot(compare_df, aes(x = mean_expr, fill = group, color = group)) +
-  geom_density(alpha = 0.35, linewidth = 0.7, adjust = 1.2) +
-  geom_vline(
-    data = summary_comp,
-    aes(xintercept = median, color = group),
-    linetype = "dashed", linewidth = 0.6
-  ) +
-  scale_fill_manual(values  = group_fills, name = NULL) +
-  scale_color_manual(values = group_fills, name = NULL) +
-  theme_bw() +
-  theme(
-    legend.position  = c(0.82, 0.85),
-    legend.background = element_rect(fill = "white", color = "grey80"),
-    axis.title       = element_text(size = 13),
-    panel.grid.minor = element_blank()
-  ) +
-  xlab("Mean log2 normalized counts (batch-corrected)") +
-  ylab("Density") +
-  labs(
-    title    = "Expression density: loop anchors vs random 30 kb regions",
-    subtitle = "Dashed lines = group medians"
-  )
-
-print(p_density)
-ggsave(file.path(loops_dir, "loop_vs_random_density_collapsed.pdf"),
-       p_density, width = 8, height = 6)
+print(p_box)
+ggsave(file.path(loops_dir, "loop_vs_random_violin_boxplot.pdf"),
+       p_box, width = 9, height = 7)
 
 cat("\n=== Loop vs Random analysis complete — plots saved to Loops/ ===\n")
 ```
