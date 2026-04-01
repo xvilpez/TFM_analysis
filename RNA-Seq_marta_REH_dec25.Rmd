@@ -1068,6 +1068,48 @@ for (cluster_name in names(cluster_gene_lists)) {
 }
 ```
 
+```{r Export full enrichR results for all clusters}
+
+full_enrichr_export_dir <- file.path(clusters_dir, "enrichr_full_results")
+if (!dir.exists(full_enrichr_export_dir)) dir.create(full_enrichr_export_dir, recursive = TRUE)
+
+for (cluster_name in names(all_cluster_enrichr_results)) {
+  
+  enriched_cluster <- all_cluster_enrichr_results[[cluster_name]]
+  
+  cat("\n=== Exporting full results for Cluster", cluster_name, "===\n")
+  
+  for (db_idx in seq_along(dbs)) {
+    db_name    <- dbs[db_idx]
+    db_result  <- enriched_cluster[[db_idx]]
+    
+    if (is.null(db_result) || nrow(db_result) == 0) {
+      cat("  Empty result for", db_name, "\n")
+      next
+    }
+    
+    db_processed <- process_enrichr_db(db_result) %>%
+      arrange(P.value) %>%
+      select(Term, Gene_count, total, gene_ratio,
+             P.value, Adjusted.P.value, Combined.Score, Genes)
+    
+    cat("  ", db_name, ":", nrow(db_processed), "terms | best P.value:",
+        formatC(min(db_processed$P.value), format = "e", digits = 2),
+        "| best adj.P:", formatC(min(db_processed$Adjusted.P.value), format = "e", digits = 2), "\n")
+    
+    out_file <- file.path(
+      full_enrichr_export_dir,
+      paste0("Cluster", cluster_name, "_", db_name, "_ALL_terms.tsv")
+    )
+    write.table(db_processed, out_file, sep = "\t", row.names = FALSE, quote = FALSE)
+  }
+}
+
+cat("\n=== Full export complete ===\n")
+cat("Files saved to:", full_enrichr_export_dir, "\n")
+cat("Total files written:", length(names(all_cluster_enrichr_results)) * length(dbs), "\n")
+```
+
 ```{r ChIP-seq Peak to TSS Distance Analysis}
 cat("\n=== ChIP-SEQ PEAK TO TSS DISTANCE ANALYSIS ===\n\n")
 
@@ -2669,6 +2711,177 @@ p2 <- ggplot(
 print(p2)
 ggsave(file.path(loops_dir, "loop_anchor_counts_violin_specific_vs_shared.pdf"),
        p2, width = 8, height = 6)
+```
+
+```{r Loop vs Random Genome Comparison, fig.width=9, fig.height=7}
+cat("\n=== LOOP ANCHORS vs RANDOM GENOME REGIONS ===\n\n")
+
+library(GenomicRanges)
+library(BSgenome.Hsapiens.UCSC.hg38)
+
+# ── 1. Collapse ALL loop anchor genes into one set ────────────────────────────
+all_loop_genes <- unique(unlist(lapply(loop_data, function(x) x$genes)))
+cat(paste0("Total unique genes at any loop anchor: ", length(all_loop_genes), "\n"))
+
+# ── 2. Count total unique anchor intervals across all loop files ──────────────
+n_loops_to_sample <- 0
+for (loop_name in names(loop_files)) {
+  file_path <- file.path(loop_dir, loop_files[[loop_name]]$file)
+  if (file.exists(file_path)) {
+    bed <- read.table(file_path, header = FALSE, stringsAsFactors = FALSE)
+    n_loops_to_sample <- n_loops_to_sample + nrow(unique(bed[, 1:3]))
+  }
+}
+cat(paste0("Total unique loop anchor intervals: ", n_loops_to_sample, "\n"))
+
+# ── 3. Sample matched number of random 30 kb regions from hg38 ───────────────
+interval_size  <- 30000L
+set.seed(42)
+
+canonical_chrs <- paste0("chr", c(1:22, "X", "Y"))
+chr_lengths     <- seqlengths(BSgenome.Hsapiens.UCSC.hg38)[canonical_chrs]
+chr_lengths     <- chr_lengths[!is.na(chr_lengths)]
+chr_weights     <- chr_lengths / sum(chr_lengths)
+
+sampled_chrs <- sample(names(chr_weights),
+                       size    = n_loops_to_sample,
+                       replace = TRUE,
+                       prob    = chr_weights)
+
+random_starts <- mapply(function(chr, len) {
+  max_start <- len - interval_size
+  if (max_start <= 0) return(1L)
+  sample.int(max_start, size = 1L)
+}, sampled_chrs, chr_lengths[sampled_chrs])
+
+random_gr <- GRanges(
+  seqnames = sampled_chrs,
+  ranges   = IRanges(start = as.integer(random_starts),
+                     end   = as.integer(random_starts) + interval_size - 1L)
+)
+cat(paste0("Sampled ", length(random_gr), " random 30 kb intervals\n"))
+
+# ── 4. Map genes to random regions (exclude any already in loop set) ──────────
+hits_random  <- findOverlaps(random_gr, genes_gr)
+random_genes <- unique(genes_gr$gene_name[subjectHits(hits_random)])
+random_genes <- random_genes[!random_genes %in% all_loop_genes]
+cat(paste0("Unique genes in random regions (not in loops): ", length(random_genes), "\n\n"))
+
+# ── 5. Get ONE mean expression value per gene (averaged across samples) ───────
+# Use batch-corrected log2 matrix already in memory
+loop_means <- rowMeans(mat_corrected[all_loop_genes[all_loop_genes %in% rownames(mat_corrected)], ])
+random_means <- rowMeans(mat_corrected[random_genes[random_genes %in% rownames(mat_corrected)], ])
+
+compare_df <- data.frame(
+  mean_expr = c(loop_means, random_means),
+  group     = factor(
+    c(rep("Loop anchors", length(loop_means)),
+      rep("Random regions", length(random_means))),
+    levels = c("Random regions", "Loop anchors")
+  )
+)
+
+cat(paste0("Genes in loop anchor group: ",  length(loop_means),   "\n"))
+cat(paste0("Genes in random region group: ", length(random_means), "\n\n"))
+
+# ── 6. Wilcoxon test ──────────────────────────────────────────────────────────
+wt <- wilcox.test(
+  compare_df$mean_expr[compare_df$group == "Loop anchors"],
+  compare_df$mean_expr[compare_df$group == "Random regions"]
+)
+cat(paste0("Wilcoxon p-value: ", formatC(wt$p.value, format = "e", digits = 3), "\n"))
+
+sig <- case_when(
+  wt$p.value < 0.001 ~ "***",
+  wt$p.value < 0.01  ~ "**",
+  wt$p.value < 0.05  ~ "*",
+  TRUE               ~ "ns"
+)
+
+y_sig <- max(compare_df$mean_expr, na.rm = TRUE) * 1.05
+
+# ── 7. Summary stats ──────────────────────────────────────────────────────────
+summary_comp <- compare_df %>%
+  group_by(group) %>%
+  summarise(
+    n        = n(),
+    mean     = round(mean(mean_expr,   na.rm = TRUE), 4),
+    median   = round(median(mean_expr, na.rm = TRUE), 4),
+    sd       = round(sd(mean_expr,     na.rm = TRUE), 4),
+    .groups  = "drop"
+  )
+cat("\n=== Summary statistics ===\n")
+print(summary_comp)
+write.table(summary_comp,
+            file.path(loops_dir, "loop_vs_random_summary_stats.tsv"),
+            sep = "\t", row.names = FALSE, quote = FALSE)
+
+group_fills <- c("Loop anchors"   = "#7B3F9E",
+                 "Random regions" = "#B0B0B0")
+
+# ── 8. Violin + boxplot ───────────────────────────────────────────────────────
+p_violin <- ggplot(compare_df, aes(x = group, y = mean_expr, fill = group)) +
+  geom_violin(trim = FALSE, alpha = 0.7, linewidth = 0.4) +
+  geom_boxplot(width = 0.12, outlier.shape = NA, linewidth = 0.35, alpha = 0.9) +
+  annotate("segment",
+           x = 1, xend = 2,
+           y = y_sig, yend = y_sig,
+           linewidth = 0.5, color = "gray30") +
+  annotate("text",
+           x = 1.5, y = y_sig * 1.02,
+           label = sig, size = 6, fontface = "bold", color = "gray20") +
+  scale_fill_manual(values = group_fills) +
+  theme_bw() +
+  theme(
+    legend.position  = "none",
+    axis.title       = element_text(size = 13),
+    axis.text        = element_text(size = 12),
+    panel.grid.minor = element_blank()
+  ) +
+  xlab(NULL) +
+  ylab("Mean log2 normalized counts\n(batch-corrected)") +
+  labs(
+    title    = "Gene expression: loop anchors vs random 30 kb regions",
+    subtitle = paste0(
+      "Loop: ", length(loop_means), " genes  |  ",
+      "Random: ", length(random_means), " genes  |  ",
+      "Wilcoxon p = ", formatC(wt$p.value, format = "e", digits = 2)
+    )
+  )
+
+print(p_violin)
+ggsave(file.path(loops_dir, "loop_vs_random_violin_collapsed.pdf"),
+       p_violin, width = 7, height = 7)
+
+# ── 9. Density plot ───────────────────────────────────────────────────────────
+p_density <- ggplot(compare_df, aes(x = mean_expr, fill = group, color = group)) +
+  geom_density(alpha = 0.35, linewidth = 0.7, adjust = 1.2) +
+  geom_vline(
+    data = summary_comp,
+    aes(xintercept = median, color = group),
+    linetype = "dashed", linewidth = 0.6
+  ) +
+  scale_fill_manual(values  = group_fills, name = NULL) +
+  scale_color_manual(values = group_fills, name = NULL) +
+  theme_bw() +
+  theme(
+    legend.position  = c(0.82, 0.85),
+    legend.background = element_rect(fill = "white", color = "grey80"),
+    axis.title       = element_text(size = 13),
+    panel.grid.minor = element_blank()
+  ) +
+  xlab("Mean log2 normalized counts (batch-corrected)") +
+  ylab("Density") +
+  labs(
+    title    = "Expression density: loop anchors vs random 30 kb regions",
+    subtitle = "Dashed lines = group medians"
+  )
+
+print(p_density)
+ggsave(file.path(loops_dir, "loop_vs_random_density_collapsed.pdf"),
+       p_density, width = 8, height = 6)
+
+cat("\n=== Loop vs Random analysis complete — plots saved to Loops/ ===\n")
 ```
 
 ```{r Compartment intersection}
