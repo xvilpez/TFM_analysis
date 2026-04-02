@@ -3,12 +3,14 @@ library(ggplot2)
 library(ggpubr)
 library(rstatix)
 library(tidyr)
-library(cowplot)
+library(patchwork)
 
 # ============================================================================
 # Load data
 # ============================================================================
 total_reads <- 24228692
+
+setwd("/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/loops/intersected_loops/chip_coverage")
 
 cov <- read.table(
   "anchor_coverage_full.bed",
@@ -18,9 +20,9 @@ cov <- read.table(
                 "anchor_length", "fraction_covered")
 ) %>%
   mutate(
-    CPM              = (read_count / total_reads) * 1e6,
-    log2_CPM         = log2(CPM + 1),
-    mean_depth       = read_count / anchor_length,
+    CPM               = (read_count / total_reads) * 1e6,
+    log2_CPM          = log2(CPM + 1),
+    mean_depth        = read_count / anchor_length,
     mean_depth_pseudo = mean_depth + 1e-6,
     loop_class = factor(loop_class, levels = c(
       "REH_specific", "EP1_specific", "ARO_specific",
@@ -53,7 +55,6 @@ sig_comparisons <- wilcox_results %>%
   filter(p.adj < 0.05) %>%
   select(group1, group2, p.adj.signif)
 
-# Stack brackets above the boxes
 y_max   <- max(cov$log2_CPM, na.rm = TRUE)
 y_start <- y_max * 0.75
 sig_comparisons <- sig_comparisons %>%
@@ -62,50 +63,77 @@ sig_comparisons <- sig_comparisons %>%
                           length.out = n()))
 
 # ============================================================================
-# PLOT A — Boxplot: log2 CPM with significant brackets only
+# *** NEW: Build brackets manually to avoid stat_pvalue_manual bug ***
+# ============================================================================
+level_order <- c("REH_specific", "EP1_specific", "ARO_specific",
+                 "shared_EP1_REH", "shared_ARO_REH", "shared_EP1_ARO", "shared_all3")
+x_pos <- setNames(seq_along(level_order), level_order)
+
+sig_ann <- sig_comparisons %>%
+  mutate(
+    x    = x_pos[group1],
+    xend = x_pos[group2],
+    xmid = (x_pos[group1] + x_pos[group2]) / 2
+  )
+
+bracket_segments <- bind_rows(
+  sig_ann %>% transmute(x = x,    xend = xend, y = y.position,        yend = y.position),
+  sig_ann %>% transmute(x = x,    xend = x,    y = y.position - 0.05, yend = y.position),
+  sig_ann %>% transmute(x = xend, xend = xend, y = y.position - 0.05, yend = y.position)
+)
+
+bracket_labels <- sig_ann %>%
+  transmute(x = xmid, y = y.position + 0.07, label = p.adj.signif)
+
+# ============================================================================
+# PLOT A — Boxplot
 # ============================================================================
 p_box <- ggplot(cov, aes(x = loop_class, y = log2_CPM, fill = loop_class)) +
   geom_boxplot(
     outlier.size  = 0.3,
     outlier.alpha = 0.4,
-    linewidth     = 0.4,
+    size          = 0.4,   # <-- was linewidth
     width         = 0.65
   ) +
   geom_hline(
     yintercept = median(cov$log2_CPM),
     linetype   = "dashed",
     color      = "red",
-    linewidth  = 0.5
+    size       = 0.5       # <-- was linewidth
   ) +
-  stat_pvalue_manual(
-    sig_comparisons,
-    label        = "p.adj.signif",
-    tip.length   = 0.01,
-    bracket.size = 0.4,
-    size         = 4
+  # *** replaced stat_pvalue_manual with these two ***
+  geom_segment(
+    data        = bracket_segments,
+    aes(x = x, xend = xend, y = y, yend = yend),
+    inherit.aes = FALSE,
+    size        = 0.4
+  ) +
+  geom_text(
+    data        = bracket_labels,
+    aes(x = x, y = y, label = label),
+    inherit.aes = FALSE,
+    size        = 4
   ) +
   scale_fill_manual(values = class_colors) +
   scale_y_continuous(expand = expansion(mult = c(0.05, 0.18))) +
   theme_bw() +
   theme(
     panel.grid      = element_blank(),
-    axis.text.x     = element_text(angle = 35, hjust = 1,
-                                   size = 10, face = "bold"),
+    axis.text.x     = element_text(angle = 35, hjust = 1, size = 10, face = "bold"),
     axis.text.y     = element_text(size = 10),
     axis.title      = element_text(size = 12),
     plot.title      = element_text(hjust = 0.5, face = "bold", size = 13),
     plot.subtitle   = element_text(hjust = 0.5, size = 9, color = "gray40"),
     legend.position = "none"
   ) +
-  xlab("Loop type") +
-  ylab("Coverage (log2 CPM)") +
+  xlab("Loop type") + ylab("Coverage (log2 CPM)") +
   labs(
     title    = "E2A-PBX1 ChIP-seq counts at loop anchors",
     subtitle = "Wilcoxon, BH-adjusted — significant comparisons only"
   )
 
 # ============================================================================
-# PLOT B — Violin + boxplot: mean depth log10
+# PLOT B — Violin + boxplot
 # ============================================================================
 p_violin <- ggplot(cov, aes(x = loop_class, y = mean_depth_pseudo,
                             fill = loop_class)) +
@@ -113,13 +141,13 @@ p_violin <- ggplot(cov, aes(x = loop_class, y = mean_depth_pseudo,
     alpha     = 0.65,
     scale     = "width",
     trim      = FALSE,
-    linewidth = 0.3
+    size      = 0.3        # <-- was linewidth
   ) +
   geom_boxplot(
     width         = 0.12,
     outlier.size  = 0.3,
     outlier.alpha = 0.4,
-    linewidth     = 0.4,
+    size          = 0.4,   # <-- was linewidth
     fill          = "white",
     color         = "black"
   ) +
@@ -127,7 +155,7 @@ p_violin <- ggplot(cov, aes(x = loop_class, y = mean_depth_pseudo,
     yintercept = median(cov$mean_depth_pseudo),
     linetype   = "dashed",
     color      = "red",
-    linewidth  = 0.5
+    size       = 0.5       # <-- was linewidth
   ) +
   scale_y_log10(
     breaks = c(0.001, 0.01, 0.1, 1),
@@ -137,27 +165,28 @@ p_violin <- ggplot(cov, aes(x = loop_class, y = mean_depth_pseudo,
   theme_bw() +
   theme(
     panel.grid      = element_blank(),
-    axis.text.x     = element_text(angle = 35, hjust = 1,
-                                   size = 10, face = "bold"),
+    axis.text.x     = element_text(angle = 35, hjust = 1, size = 10, face = "bold"),
     axis.text.y     = element_text(size = 10),
     axis.title      = element_text(size = 12),
     plot.title      = element_text(hjust = 0.5, face = "bold", size = 13),
     legend.position = "none"
   ) +
-  xlab("Loop type") +
-  ylab("Coverage (log10 scale)") +
+  xlab("Loop type") + ylab("Coverage (log10 scale)") +
   labs(title = "ChIP-seq Coverage Across Loop Anchor Types")
 
 # ============================================================================
-# COMBINED
+# SAVE
 # ============================================================================
-p_combined <- plot_grid(p_box, p_violin,
-                        ncol       = 2,
-                        labels     = c("A", "B"),
-                        rel_widths = c(1, 1))
+pdf("EP1_chip_loop_counts_boxplot.pdf", width = 8, height = 7)
+print(p_box)
+dev.off()
 
+pdf("EP1_chip_loop_coverage_violin.pdf", width = 8, height = 6)
+print(p_violin)
+dev.off()
+
+p_combined <- p_box + p_violin + plot_annotation(tag_levels = "A")
+
+pdf("EP1_chip_loop_combined.pdf", width = 16, height = 7)
 print(p_combined)
-
-ggsave("EP1_chip_loop_counts_boxplot.pdf",  p_box,      width = 8,  height = 7)
-ggsave("EP1_chip_loop_coverage_violin.pdf", p_violin,   width = 8,  height = 6)
-ggsave("EP1_chip_loop_combined.pdf",        p_combined, width = 16, height = 7)
+dev.off()
