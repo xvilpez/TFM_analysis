@@ -285,7 +285,7 @@ cat("Bins in corrected merged dataframe:", nrow(cs_REH_corr), "\n")
 ## 3.4 PCA (post-correction)
 
 Re-run the same PCA on the corrected data. Samples should now cluster more
-cleanly by condition, with replicates tighter and the chr4/chr13 artefacts
+cleanly by condition, with replicates tighter and the artefacts
 no longer driving separation.
 
 ```{r pca-corrected}
