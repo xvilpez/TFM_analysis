@@ -1,3 +1,42 @@
+---
+title: "Hi-C TAD Analysis – REH samples"
+author: ""
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    code_folding: hide
+---
+# Overview
+
+This notebook analyses **TAD boundaries** inferred from Hi-C data using
+HiCExplorer findTADs bed files and posterior bedtools comparisons, obtaining three boundary conditions:
+
+| Condition | Description |
+|-----------|-------------|
+| **REH** | Specific boudndaries parental cell line |
+| **EP1** | Specific boundaries EP1 treatment |
+| **shared** | shared boundaries | 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center"
+)
+knitr::opts_knit$set(root.dir = "R:/R_STIK/Hi-C/HiC_marta_Oct25/TADs/comparison")
+# knitr::opts_knit$set(root.dir = "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/TADs/comparison")
+
+```
+
+First we are going to plot the coverage of REH ATAC-Seq reads into the different boundary conditions, and also with a randomized regions negative control.
+
+```{r ATAC-Seq intersection, eval=FALSE}
 library(dplyr)
 library(ggplot2)
 library(ggpubr)
@@ -377,7 +416,8 @@ p_fraction_random <- ggplot(all_cov, aes(x = boundary_class, y = fraction_covere
     title    = "ATAC-seq breadth of coverage at TAD boundaries (+ random)",
     subtitle = "Wilcoxon vs random, BH-adjusted — significant comparisons only"
   )
-
+print(p_combined_pairwise)
+print(p_combined_random)
 # ============================================================================
 # Save — pairwise (boundary classes only)
 # ============================================================================
@@ -448,3 +488,7 @@ print(wilcox_vs_random %>% select(group1, group2, p, p.adj, p.adj.signif))
 
 cat("\n--- Wilcoxon vs random results (fraction covered) ---\n")
 print(wilcox_frac_vs_random %>% select(group1, group2, p, p.adj, p.adj.signif))
+```
+We are also going to validate the 
+```{r CTCF ChIP-Seq intersection}
+```
