@@ -3350,9 +3350,9 @@ for (i in seq_len(nrow(comp_gene_lists))) {
 
 cat("\n=== Compartment enrichR analysis complete ===\n")
 ```
+```{r TAD intersection}
 
-```{r TAD Boundary Gene Analysis, fig.width=14, fig.height=8}
-cat("\n=== TAD BOUNDARY GENE ANALYSIS ===\n\n")
+cat("\n=== TAD BOUNDARY GENE ANALYSIS (3-WAY COMPARISON) ===\n\n")
 
 # ----------------------------------------------------------------------------
 # 1. Load TAD boundary BED files + random regions
@@ -3361,9 +3361,13 @@ tad_dir    <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/TADs/comparison"
 random_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/TADs/comparison/atac_coverage"
 
 tad_files <- list(
-  TP_plus  = list(file = file.path(tad_dir, "unique_to_HiC-REH-EP1_boundaries.bed"), label = "TP+"),
-  TP_minus = list(file = file.path(tad_dir, "unique_to_REH_boundaries.bed"),         label = "TP-"),
-  shared   = list(file = file.path(tad_dir, "shared_boundaries_filtered.bed"),        label = "shared")
+  shared_all_three      = list(file = file.path(tad_dir, "shared_all_three.bed"),                             label = "shared_all"),
+  shared_REH_EP1        = list(file = file.path(tad_dir, "shared_pairwise_REH_HiC-REH-EP1.bed"),              label = "shared_REH_EP1"),
+  shared_REH_Aro        = list(file = file.path(tad_dir, "shared_pairwise_REH_HiC-REH-EP1-Aro.bed"),          label = "shared_REH_Aro"),
+  shared_EP1_Aro        = list(file = file.path(tad_dir, "shared_pairwise_HiC-REH-EP1_HiC-REH-EP1-Aro.bed"),  label = "shared_EP1_Aro"),
+  specific_REH          = list(file = file.path(tad_dir, "specific_to_REH.bed"),                              label = "specific_REH"),
+  specific_EP1          = list(file = file.path(tad_dir, "specific_to_HiC-REH-EP1.bed"),                      label = "specific_EP1"),
+  specific_Aro          = list(file = file.path(tad_dir, "specific_to_HiC-REH-EP1-Aro.bed"),                  label = "specific_Aro")
 )
 
 tad_gr_list <- list()
@@ -3402,7 +3406,6 @@ tad_gr_all <- do.call(c, c(unname(tad_gr_list), list(random_gr)))
 
 # ----------------------------------------------------------------------------
 # 2. Overlap TAD boundaries + random regions → gene symbols
-#    Reuse genes_gr built in the ChIP-seq chunk
 # ----------------------------------------------------------------------------
 hits_tad <- findOverlaps(tad_gr_all, genes_gr)
 
@@ -3430,7 +3433,7 @@ mat_corrected_tad <- removeBatchEffect(
 mat_centered_tad <- t(scale(t(mat_corrected_tad), center = TRUE, scale = FALSE))
 
 # ----------------------------------------------------------------------------
-# 4. Long format + condition labels
+# 4. Long format + condition labels — now keeping all 3 conditions
 # ----------------------------------------------------------------------------
 counts_long_tad <- as.data.frame(mat_centered_tad) %>%
   tibble::rownames_to_column("gene_name") %>%
@@ -3443,18 +3446,23 @@ counts_long_tad <- as.data.frame(mat_centered_tad) %>%
     as.data.frame(colData(dds)) %>%
       tibble::rownames_to_column("sample") %>%
       select(sample, condition) %>%
-      mutate(condition = factor(condition, levels = c("REH", "EP1"))),
+      mutate(condition = factor(condition, levels = c("REH", "EP1", "Aro"))),
     by = "sample"
   )
 
 # ----------------------------------------------------------------------------
 # 5. Join TAD gene map with expression data
 # ----------------------------------------------------------------------------
-tad_category_levels <- c("shared", "TP+", "TP-", "random")
+tad_category_levels <- c(
+  "shared_all",
+  "shared_REH_EP1", "shared_REH_Aro", "shared_EP1_Aro",
+  "specific_REH", "specific_EP1", "specific_Aro",
+  "random"
+)
 
 counts_tad <- tad_gene_map %>%
   inner_join(counts_long_tad, by = "gene_name") %>%
-  filter(condition %in% c("REH", "EP1")) %>%
+  filter(condition %in% c("REH", "EP1", "Aro")) %>%
   mutate(tad_category = factor(tad_category, levels = tad_category_levels))
 
 cat("Genes per condition × TAD category matched in expression matrix:\n")
@@ -3481,9 +3489,7 @@ write.table(summary_stats_tad,
             sep = "\t", row.names = FALSE, quote = FALSE)
 
 # ----------------------------------------------------------------------------
-# 7. Wilcoxon: TP+, TP-, shared vs random (random as reference)
-#    Per-gene means per condition to avoid pseudo-replication
-#    BH-adjusted per condition
+# 7. Wilcoxon: each TAD category vs random, per condition (BH-adjusted)
 # ----------------------------------------------------------------------------
 sig_label_tad <- function(p) {
   case_when(
@@ -3499,97 +3505,96 @@ gene_means_tad <- counts_tad %>%
   group_by(tad_category, gene_name, condition) %>%
   summarise(mean_log2 = mean(log2_centered), .groups = "drop")
 
+tad_cats_to_test <- c(
+  "shared_all", "shared_REH_EP1", "shared_REH_Aro", "shared_EP1_Aro",
+  "specific_REH", "specific_EP1", "specific_Aro"
+)
+
 wilcox_tad <- gene_means_tad %>%
   group_by(condition) %>%
-  summarise(
-    p_TPplus_vs_random  = {
-      x <- mean_log2[tad_category == "TP+"];    y <- mean_log2[tad_category == "random"]
-      if (length(x) >= 3 & length(y) >= 3) wilcox.test(x, y)$p.value else NA_real_
-    },
-    p_TPminus_vs_random = {
-      x <- mean_log2[tad_category == "TP-"];    y <- mean_log2[tad_category == "random"]
-      if (length(x) >= 3 & length(y) >= 3) wilcox.test(x, y)$p.value else NA_real_
-    },
-    p_shared_vs_random  = {
-      x <- mean_log2[tad_category == "shared"]; y <- mean_log2[tad_category == "random"]
-      if (length(x) >= 3 & length(y) >= 3) wilcox.test(x, y)$p.value else NA_real_
-    },
-    .groups = "drop"
-  ) %>%
+  group_modify(~ {
+    rand_vals <- .x$mean_log2[.x$tad_category == "random"]
+    results <- lapply(tad_cats_to_test, function(cat) {
+      test_vals <- .x$mean_log2[.x$tad_category == cat]
+      p <- if (length(test_vals) >= 3 & length(rand_vals) >= 3) {
+        wilcox.test(test_vals, rand_vals)$p.value
+      } else NA_real_
+      data.frame(tad_category = cat, p_value = p)
+    })
+    do.call(rbind, results)
+  }) %>%
+  ungroup() %>%
+  group_by(condition) %>%
   mutate(
-    padj_TPplus_vs_random  = p.adjust(p_TPplus_vs_random,  method = "BH"),
-    padj_TPminus_vs_random = p.adjust(p_TPminus_vs_random, method = "BH"),
-    padj_shared_vs_random  = p.adjust(p_shared_vs_random,  method = "BH"),
-    sig_TPplus             = sig_label_tad(padj_TPplus_vs_random),
-    sig_TPminus            = sig_label_tad(padj_TPminus_vs_random),
-    sig_shared             = sig_label_tad(padj_shared_vs_random)
-  )
+    padj = p.adjust(p_value, method = "BH"),
+    sig  = sig_label_tad(padj)
+  ) %>%
+  ungroup()
 
-cat("\n--- Wilcoxon: TP+, TP-, shared vs random (BH-adjusted per condition) ---\n")
+cat("\n--- Wilcoxon: each TAD category vs random (BH-adjusted per condition) ---\n")
 print(wilcox_tad)
 write.table(wilcox_tad,
             file.path(tad_out_dir, "wilcoxon_tad_vs_random.tsv"),
             sep = "\t", row.names = FALSE, quote = FALSE)
 
 # ----------------------------------------------------------------------------
-# 8. Significance label y-positions (above each box vs random)
+# 8. Significance label y-positions
 # ----------------------------------------------------------------------------
 y_positions_tad <- counts_tad %>%
   group_by(condition, tad_category) %>%
   summarise(y_max = max(log2_centered, na.rm = TRUE), .groups = "drop")
 
 bracket_tad <- wilcox_tad %>%
-  pivot_longer(
-    cols      = c(sig_TPplus, sig_TPminus, sig_shared),
-    names_to  = "which",
-    values_to = "sig"
-  ) %>%
   filter(sig != "ns") %>%
-  mutate(
-    tad_category = factor(
-      case_when(
-        which == "sig_TPplus"  ~ "TP+",
-        which == "sig_TPminus" ~ "TP-",
-        which == "sig_shared"  ~ "shared"
-      ),
-      levels = tad_category_levels
-    )
-  ) %>%
+  mutate(tad_category = factor(tad_category, levels = tad_category_levels)) %>%
   left_join(y_positions_tad, by = c("condition", "tad_category")) %>%
   mutate(y_pos = y_max * 1.08)
 
 # ----------------------------------------------------------------------------
-# 9. Plot — x = tad_category, faceted by condition
+# 9. Color palette for 8 categories
 # ----------------------------------------------------------------------------
 tad_colors <- c(
-  "TP+"    = "#d6604d",
-  "TP-"    = "#4393c3",
-  "shared" = "#878787",
-  "random" = "#b8b8b8"
+  "shared_all"     = "#525252",   # dark gray  — shared by everyone
+  "shared_REH_EP1" = "#8c96c6",   # lilac      — REH + EP1
+  "shared_REH_Aro" = "#88419d",   # purple     — REH + Aro
+  "shared_EP1_Aro" = "#8856a7",   # medium purple — EP1 + Aro
+  "specific_REH"   = "#4393c3",   # blue       — REH only
+  "specific_EP1"   = "#d6604d",   # red-orange — EP1 only
+  "specific_Aro"   = "#f4a582",   # salmon     — Aro only
+  "random"         = "#b8b8b8"    # light gray — background control
 )
+
+# ----------------------------------------------------------------------------
+# 10. Plot — faceted by condition (3 panels)
+# ----------------------------------------------------------------------------
+# Random median per condition for reference line
+random_medians <- counts_tad %>%
+  filter(tad_category == "random") %>%
+  group_by(condition) %>%
+  summarise(rand_med = median(log2_centered, na.rm = TRUE), .groups = "drop")
 
 p_tad <- ggplot(
   counts_tad,
   aes(x = tad_category, y = log2_centered, fill = tad_category)
 ) +
   geom_boxplot(
-    outlier.size  = 0.4,
-    outlier.alpha = 0.3,
-    alpha         = 0.7,
+    outlier.size  = 0.3,
+    outlier.alpha = 0.2,
+    alpha         = 0.75,
     linewidth     = 0.4
   ) +
   geom_hline(
-    yintercept = median(counts_tad$log2_centered[counts_tad$tad_category == "random"],
-                        na.rm = TRUE),
-    linetype   = "dashed",
-    color      = "gray40",
-    linewidth  = 0.4
+    data      = random_medians,
+    aes(yintercept = rand_med),
+    linetype  = "dashed",
+    color     = "gray40",
+    linewidth = 0.4
   ) +
   {if (nrow(bracket_tad) > 0)
     geom_text(
       data        = bracket_tad,
-      aes(x       = tad_category, y = y_pos, label = sig),
-      size        = 5,
+      aes(x = tad_category, y = y_pos, label = sig),
+      size        = 4,
       fontface    = "bold",
       color       = "gray20",
       inherit.aes = FALSE
@@ -3599,7 +3604,7 @@ p_tad <- ggplot(
   facet_wrap(~ condition, nrow = 1) +
   theme_bw() +
   theme(
-    axis.text.x      = element_text(angle = 45, hjust = 1, size = 10),
+    axis.text.x      = element_text(angle = 45, hjust = 1, size = 8),
     axis.title       = element_text(size = 11),
     plot.title       = element_text(hjust = 0.5, face = "bold", size = 13),
     plot.subtitle    = element_text(hjust = 0.5, size = 9, color = "gray40"),
@@ -3612,15 +3617,15 @@ p_tad <- ggplot(
   ylab("Log2 normalized counts (batch-corrected, mean-centered)") +
   labs(
     title    = "Gene expression at TAD boundaries",
-    subtitle = "Significance vs random (Wilcoxon, BH-adjusted) — dashed line = random median"
+    subtitle = "Significance vs random (Wilcoxon, BH-adjusted) — dashed line = random median per condition"
   )
 
 print(p_tad)
 ggsave(file.path(tad_out_dir, "tad_boundary_counts_boxplot.pdf"),
-       p_tad, width = 10, height = 7)
+       p_tad, width = 16, height = 7)
 
 # ----------------------------------------------------------------------------
-# 10. Overlap with DEGs: how many DEGs fall at each TAD boundary category?
+# 11. DEG overlap — now using condition-specific DEGs
 # ----------------------------------------------------------------------------
 cat("\n=== DEG OVERLAP WITH TAD BOUNDARIES ===\n\n")
 
@@ -3636,7 +3641,8 @@ deg_tad_overlap <- tad_gene_map %>%
     n_DEGs        = n_distinct(gene_name[is_DEG]),
     pct_DEGs      = round(n_distinct(gene_name[is_DEG]) / n_distinct(gene_name) * 100, 2),
     .groups       = "drop"
-  )
+  ) %>%
+  mutate(tad_category = factor(tad_category, levels = tad_category_levels))
 
 cat("DEG enrichment per TAD boundary category:\n")
 print(deg_tad_overlap)
@@ -3657,33 +3663,45 @@ contingency_tad <- matrix(
 
 cat("\nPairwise Fisher — each TAD category vs random:\n")
 random_row <- contingency_tad["random", ]
-for (cat_name in c("TP+", "TP-", "shared")) {
-  ct <- rbind(contingency_tad[cat_name, ], random_row)
-  ft <- fisher.test(ct)
-  cat(sprintf("  %s vs random: OR = %.2f, p = %.4f\n", cat_name, ft$estimate, ft$p.value))
+for (cat_name in tad_cats_to_test) {
+  if (cat_name %in% rownames(contingency_tad)) {
+    ct <- rbind(contingency_tad[cat_name, ], random_row)
+    ft <- fisher.test(ct)
+    cat(sprintf("  %s vs random: OR = %.2f, p = %.4f\n", cat_name, ft$estimate, ft$p.value))
+  }
 }
 
 # Bar plot of DEG percentages
-p_deg_tad <- ggplot(deg_tad_overlap,
-                    aes(x = tad_category, y = pct_DEGs, fill = tad_category)) +
+p_deg_tad <- ggplot(
+  deg_tad_overlap,
+  aes(x = tad_category, y = pct_DEGs, fill = tad_category)
+) +
   geom_bar(stat = "identity") +
-  geom_text(aes(label = paste0(round(pct_DEGs, 1), "%\n(n=", n_DEGs, ")")),
-            vjust = -0.3, size = 4) +
+  geom_text(
+    aes(label = paste0(round(pct_DEGs, 1), "%\n(n=", n_DEGs, ")")),
+    vjust = -0.3, size = 3.5
+  ) +
   scale_fill_manual(values = tad_colors) +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  scale_x_discrete(drop = FALSE) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.18))) +
   theme_bw() +
-  theme(legend.position = "none") +
-  labs(title = "Percentage of DEGs at TAD boundaries",
-       subtitle = "Random regions as background control",
-       x = "TAD boundary category", y = "% DEGs")
+  theme(
+    legend.position = "none",
+    axis.text.x     = element_text(angle = 45, hjust = 1, size = 9)
+  ) +
+  labs(
+    title    = "Percentage of DEGs at TAD boundaries",
+    subtitle = "Random regions as background control",
+    x        = "TAD boundary category",
+    y        = "% DEGs"
+  )
 
 print(p_deg_tad)
 ggsave(file.path(tad_out_dir, "tad_boundary_DEG_pct_barplot.pdf"),
-       p_deg_tad, width = 7, height = 5)
+       p_deg_tad, width = 9, height = 6)
 
 cat("\n=== TAD BOUNDARY ANALYSIS COMPLETE ===\n")
 ```
-
 
 
 ```{r Master Gene Annotation Table}
