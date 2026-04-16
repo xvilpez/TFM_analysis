@@ -21,8 +21,8 @@ knitr::opts_chunk$set(
   message = FALSE,
   fig.align = "center"
 )
-knitr::opts_knit$set(root.dir = "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore")
-# knitr::opts_knit$set(root.dir = "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore")
+# knitr::opts_knit$set(root.dir = "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore")
+knitr::opts_knit$set(root.dir = "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore")
 
 ```
 
@@ -80,8 +80,8 @@ All bedgraph files are loaded from the cscore iteration trial directory.
 Each file contains four columns: `chr`, `start`, `end`, and the cscore `score`.
 
 ```{r load-data}
-data_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore"
-# data_dir <-"/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore"
+# data_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore"
+data_dir <-"/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore"
 
 read_cscore <- function(filename, score_colname) {
   read.table(file.path(data_dir, filename),
@@ -190,7 +190,7 @@ pca_before <- ggplot(pca_df, aes(x = PC1, y = PC2,
     shape = guide_legend(title = "Type")
   )
 print(pca_before)
-ggsave(file.path(plots_dir, "pca_before_correction.pdf"), pca_before, width = 10, height = 6)
+# ggsave(file.path(plots_dir, "pca_before_correction.pdf"), pca_before, width = 10, height = 6)
 ```
 Now we remove some problematic regions that we detected through IGV visualization of the bedgraphs
 
@@ -252,14 +252,14 @@ for(name in names(samples)){
 
   outfile <- paste0(name, "_manual_corrected.bedgraph")
   
-  write.table(
-    df_corr,
-    outfile,
-    sep = "\t",
-    quote = FALSE,
-    row.names = FALSE,
-    col.names = FALSE
-  )
+  # write.table(
+  #   df_corr,
+  #   outfile,
+  #   sep = "\t",
+  #   quote = FALSE,
+  #   row.names = FALSE,
+  #   col.names = FALSE
+  # )
 
   cat("Saved:", outfile, "\n")
 }
@@ -332,7 +332,7 @@ pca_after <- ggplot(pca_df_corr, aes(x = PC1, y = PC2,
     shape = guide_legend(title = "Type")
   )
 print(pca_after)
-ggsave(file.path(plots_dir, "pca_after_correction.pdf"), pca_after, width = 10, height = 6)
+# ggsave(file.path(plots_dir, "pca_after_correction.pdf"), pca_after, width = 10, height = 6)
 ```
 
 ## 3.2 Spearman correlation matrix
@@ -355,7 +355,7 @@ spear_p <- ggplot(melt(cor_mat), aes(x = Var1, y = Var2, fill = value)) +
   ) +
   labs(title = "Spearman Correlation – Cscore (all samples)", x = "", y = "")
 print(spear_p)
-ggsave(file.path(plots_dir, "spearman_corr.pdf"), spear_p, width = 10, height = 6)
+# ggsave(file.path(plots_dir, "spearman_corr.pdf"), spear_p, width = 10, height = 6)
 ```
 
 ## 3.3 Barplots
@@ -418,7 +418,7 @@ bins_QC <- ggplot(sample_comp, aes(x = Sample, y = Total, fill = Condition)) +
   xlab("") + ylab("Number of bins") +
   labs(title = "Total bins per sample (QC)")
 print(bins_QC)
-ggsave(file.path(plots_dir, "bins_x_sample_QC.pdf"), bins_QC, width = 10, height = 6)
+# ggsave(file.path(plots_dir, "bins_x_sample_QC.pdf"), bins_QC, width = 10, height = 6)
 ```
 ---
 
@@ -465,9 +465,9 @@ summary_comp <- data.frame(
   )
 
 knitr::kable(summary_comp, caption = "A/B compartment counts per condition (merged samples)")
-write.table(summary_comp,
-            file.path(files_dir, "summary_comp.tsv"),
-            sep = "\t", row.names = FALSE, quote = FALSE)
+# write.table(summary_comp,
+#             file.path(files_dir, "summary_comp.tsv"),
+#             sep = "\t", row.names = FALSE, quote = FALSE)
 ```
 
 ## 4.1 A/B barplot
@@ -497,7 +497,7 @@ AB_barp <- ggplot(melt(dt_merge), aes(fill = Var1, x = Var2, y = value)) +
   xlab("") + ylab("Number of bins") +
   labs(title = "A/B compartments – merged samples")
 print(AB_barp)
-ggsave(file.path(plots_dir, "AB_counts.pdf"), AB_barp, width = 10, height = 6)
+# ggsave(file.path(plots_dir, "AB_counts.pdf"), AB_barp, width = 10, height = 6)
 ```
 
 ```{r Proportion barplot}
@@ -549,7 +549,7 @@ prop_bar <- ggplot(prop_df, aes(x = Sample, y = Proportion, fill = Compartment))
   xlab("") + ylab("Proportion (%)") +
   labs(title = "A/B compartment proportions per sample")
 print(prop_bar)
-ggsave(file.path(plots_dir, "AB_proportions.pdf"), prop_bar, width = 10, height = 6)
+# ggsave(file.path(plots_dir, "AB_proportions.pdf"), prop_bar, width = 10, height = 6)
 ```
 
 ---
@@ -611,9 +611,9 @@ switch_counts <- as.data.frame(table(switching = cs_REH_merge$switching)) %>%
 knitr::kable(switch_counts[, c("switching", "Freq", "Pct", "Group")],
              col.names = c("Switching (REH_EP1_EP1Aro)", "Bins", "% total", "Group"),
              caption   = "Bin counts per switching class across REH → EP1 → EP1_Aro")
-write.table(switch_counts,
-            file.path(files_dir, "switch_counts.tsv"),
-            sep = "\t", row.names = FALSE, quote = FALSE)
+# write.table(switch_counts,
+#             file.path(files_dir, "switch_counts.tsv"),
+#             sep = "\t", row.names = FALSE, quote = FALSE)
 ```
 
 ## 5.2 Bar plot of switching counts
@@ -642,7 +642,7 @@ switch_bar <- ggplot(switch_dynamic,
   xlab("Switching class (REH_EP1_EP1Aro)") + ylab("Number of bins") +
   labs(title = "Compartment switching patterns across conditions (REH, EP1, EP1_Aro)\n(constitutive bins excluded)")
 print(switch_bar)
-ggsave(file.path(plots_dir, "switching_barplot.pdf"), switch_bar, width = 10, height = 6)
+# ggsave(file.path(plots_dir, "switching_barplot.pdf"), switch_bar, width = 10, height = 6)
 ```
 
 ## 5.3 Alluvial / Sankey plot of transitions
@@ -703,9 +703,59 @@ alluv_p <- ggplot(alluv_sum,
   xlab("") + ylab("Number of bins") +
   labs(title = "Compartment state distribution across conditions (REH, EP1, EP1_Aro)")
 print(alluv_p)
-ggsave(file.path(plots_dir, "switch_alluvian.pdf"), alluv_p, width = 10, height = 6)
+# ggsave(file.path(plots_dir, "switch_alluvian.pdf"), alluv_p, width = 10, height = 6)
 ```
 
+```{r Constitutive_vs_Dynamic Pie Chart}
+# ============================================================================
+# Pie chart: Constitutive (A_A_A / B_B_B) vs Dynamic bins
+# ============================================================================
+
+# Build summary counts
+const_dynamic_df <- switch_counts %>%
+  mutate(
+    Category = case_when(
+      switching == "A_A_A" ~ "Constitutive A (A_A_A)",
+      switching == "B_B_B" ~ "Constitutive B (B_B_B)",
+      TRUE                 ~ "Dynamic"
+    )
+  ) %>%
+  group_by(Category) %>%
+  summarise(Freq = sum(Freq), .groups = "drop") %>%
+  mutate(
+    Pct      = round(Freq / sum(Freq) * 100, 1),
+    PieLabel = paste0(Category, "\n", Pct, "%")
+  )
+
+# Color palette
+const_dynamic_colors <- c(
+  "Constitutive A (A_A_A)" = "#2ecc71",   # same green as A_A_A switching
+  "Constitutive B (B_B_B)" = "#3498db",   # same blue  as B_B_B switching
+  "Dynamic"                = "#95a5a6"    # neutral grey for all dynamic bins
+)
+
+# Plot
+overview_pie <- ggplot(const_dynamic_df,
+                       aes(x = "", y = Freq, fill = Category)) +
+  geom_col(width = 1, color = "black", linewidth = 1.1) +
+  geom_text(aes(label = PieLabel),
+            position = position_stack(vjust = 0.5),
+            size = 4, fontface = "bold", color = "white") +
+  coord_polar(theta = "y", start = 0) +
+  scale_fill_manual(values = const_dynamic_colors,
+                    name   = "Category") +
+  theme_void() +
+  ggtitle(paste0("Compartment bin overview  (n = ", sum(const_dynamic_df$Freq), " total bins)")) +
+  theme(
+    plot.title      = element_text(hjust = 0.5, size = 13, face = "bold"),
+    legend.text     = element_text(size = 10),
+    legend.title    = element_text(size = 11, face = "bold"),
+    legend.position = "right"
+  )
+
+print(overview_pie)
+# ggsave(file.path(plots_dir, "overview_pie.pdf"), overview_pie, width = 8, height = 6)
+```
 ## 5.4 Pie chart of dynamic bins only
 
 Among bins that change state at least once across the three conditions.
@@ -742,7 +792,7 @@ switch_pie <- ggplot(pie_df, aes(x = "", y = Freq, fill = switching)) +
     legend.position = "right"
   )
 print(switch_pie)
-ggsave(file.path(plots_dir, "switching_pie.pdf"), switch_pie, width = 10, height = 6)
+# ggsave(file.path(plots_dir, "switching_pie.pdf"), switch_pie, width = 10, height = 6)
 ```
 
 ## 5.5 Summary: switching groups
@@ -760,9 +810,9 @@ group_summary <- switch_counts %>%
 knitr::kable(group_summary,
              col.names = c("Group", "Bins", "% of total", "Switching classes"),
              caption   = "Compartment switching groups – REH → EP1 → EP1_Aro")
-write.table(group_summary,
-            file.path(files_dir, "switch_groups.tsv"),
-            sep = "\t", row.names = FALSE, quote = FALSE)
+# write.table(group_summary,
+#             file.path(files_dir, "switch_groups.tsv"),
+#             sep = "\t", row.names = FALSE, quote = FALSE)
 ```
 
 ## 5.6 Heatmap
@@ -794,25 +844,25 @@ annot_colors <- list(
 # Heatmap colors
 heat_colors <- colorRampPalette(c("#2166AC", "white", "#B2182B"))(1000)
 
-# Plot heatmap
-pdf(file.path(plots_dir, "cscore_heatmap.pdf"), width = 10, height = 14)
-pheatmap(cscore_heat_dyn,
-         color                = heat_colors,
-         cluster_rows         = FALSE,
-         cluster_cols         = FALSE,
-         show_rownames        = FALSE,
-         annotation_row       = annot_row,
-         annotation_colors    = annot_colors,
-         annotation_names_row = FALSE,
-         treeheight_row       = 50,
-         scale                = "row",
-         fontsize             = 12,
-         fontsize_col         = 13,
-         angle_col            = 45,
-         legend_breaks        = c(-1, -0.5, 0, 0.5, 1),
-         main                 = "Cscore Heatmap – Dynamic bins only (REH / EP1 / EP1_Aro)",
-         mar                  = c(4, 6, 4, 10))
-dev.off()
+# # Plot heatmap
+# pdf(file.path(plots_dir, "cscore_heatmap.pdf"), width = 10, height = 14)
+# pheatmap(cscore_heat_dyn,
+#          color                = heat_colors,
+#          cluster_rows         = FALSE,
+#          cluster_cols         = FALSE,
+#          show_rownames        = FALSE,
+#          annotation_row       = annot_row,
+#          annotation_colors    = annot_colors,
+#          annotation_names_row = FALSE,
+#          treeheight_row       = 50,
+#          scale                = "row",
+#          fontsize             = 12,
+#          fontsize_col         = 13,
+#          angle_col            = 45,
+#          legend_breaks        = c(-1, -0.5, 0, 0.5, 1),
+#          main                 = "Cscore Heatmap – Dynamic bins only (REH / EP1 / EP1_Aro)",
+#          mar                  = c(4, 6, 4, 10))
+# dev.off()
 
 pheatmap(cscore_heat_dyn,
          color                = heat_colors,
@@ -847,9 +897,9 @@ library(dplyr)
 library(ggplot2)
 
 # ----------------------------------------------------------------------------
-# 1. Load gene annotation BED (gencode v28)
+# 1. Load gene annotation BED (gencode v28) (either from R:/R_STIK/ or /ijc/LABS/STIK/RAW/)
 # ----------------------------------------------------------------------------
-genes_bed <- read.table("R:/R_STIK/xavi_scripts/genes_gencode.v28.bed",
+genes_bed <- read.table("/ijc/LABS/STIK/RAW/xavi_scripts/genes_gencode.v28.bed",
                         sep       = "\t",
                         header    = FALSE,
                         col.names = c("chrom", "start", "end", "strand",
@@ -1015,11 +1065,11 @@ for (sw_class in switching_dynamic_levels) {
       next
     }
 
-    save_enrichr_genelists(
-      sig_terms,
-      prefix  = paste0(sw_class, "_", db_name),
-      out_dir = files_dir
-    )
+    # save_enrichr_genelists(
+    #   sig_terms,
+    #   prefix  = paste0(sw_class, "_", db_name),
+    #   out_dir = files_dir
+    # )
 
     p <- plot_enrichr(
       sig_terms,
@@ -1028,13 +1078,13 @@ for (sw_class in switching_dynamic_levels) {
     )
     print(p)
 
-    ggsave(
-      filename = file.path(plots_dir,
-                           paste0("enrichR_", db_name, "_", sw_class, ".pdf")),
-      plot   = p,
-      width  = 10,
-      height = 7
-    )
+    # ggsave(
+    #   filename = file.path(plots_dir,
+    #                        paste0("enrichR_", db_name, "_", sw_class, ".pdf")),
+    #   plot   = p,
+    #   width  = 10,
+    #   height = 7
+    # )
 
     cat("  Saved:", db_name, "\n")
   }
@@ -1059,12 +1109,12 @@ library(tidyr)
 # ----------------------------------------------------------------------------
 # Load ChIP-seq peaks BED
 # ----------------------------------------------------------------------------
-peaks_bed <- read.table("R:/R_STIK/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed",
+peaks_bed <- read.table("/ijc/LABS/STIK/RAW/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed",
                         sep       = "\t",
                         header    = FALSE,
                         col.names = c("chrom", "start", "end")
                         [1:ncol(read.table(
-                        "R:/R_STIK/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed",
+                        "/ijc/LABS/STIK/RAW/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed",
                         sep = "\t", nrows = 1))]) %>%
   select(chrom = 1, start = 2, end = 3) %>%
   mutate(start = as.integer(start),
@@ -1206,16 +1256,25 @@ cs_REH_merge <- cs_REH_merge %>%
 # Plot 1 — Polar enrichment plot with all 8 switching classes
 # (dashed reference line at background_pct-based fold = 1)
 # ----------------------------------------------------------------------------
+# Merge significance into overlap_counts
+overlap_counts <- overlap_counts %>%
+  left_join(fisher_results %>% select(switching, significance),
+            by = "switching")
 
 overlap_polar <- ggplot(overlap_counts,
                         aes(x = switching, y = fold_enrichment, fill = switching)) +
   geom_col(color = "black", linewidth = 0.4, width = 0.85) +
   geom_hline(yintercept = 1, linetype = "dashed",
              color = "gray40", linewidth = 0.5) +
+  geom_text(aes(y     = fold_enrichment + max(fold_enrichment) * 0.08,
+                label = significance),
+            size     = 5,
+            fontface = "bold",
+            color    = "gray20") +
   coord_polar() +
   scale_fill_manual(values = switching_colors,
                     name   = "Switching\n(REH_EP1_EP1Aro)") +
-  scale_y_continuous(limits = c(0, max(overlap_counts$fold_enrichment) * 1.2)) +
+  scale_y_continuous(limits = c(0, max(overlap_counts$fold_enrichment) * 1.3)) +
   theme_bw() +
   theme(
     axis.text.x  = element_text(size = 8, face = "bold"),
@@ -1326,7 +1385,7 @@ library(tidyr)
 # Load Top25 ChIP-seq peaks BED
 # ----------------------------------------------------------------------------
 peaks_top25_bed <- read.table(
-  "R:/R_STIK/chip_seq/Xavi_TFM/top25_697HF_E2APBX1-HF_peaks.bed",
+  "/ijc/LABS/STIK/RAW/chip_seq/Xavi_TFM/top25_697HF_E2APBX1-HF_peaks.bed",
   sep    = "\t",
   header = FALSE
 ) %>%
@@ -1593,7 +1652,7 @@ library(tidyr)
 # ----------------------------------------------------------------------------
 # Output directories – separate from compartment analysis
 # ----------------------------------------------------------------------------
-loops_base_dir  <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/loops/intersected_loops/fisher"
+loops_base_dir  <- "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/loops/intersected_loops/fisher"
 loops_files_dir <- file.path(loops_base_dir, "files")
 loops_plots_dir <- file.path(loops_base_dir, "plots")
 
