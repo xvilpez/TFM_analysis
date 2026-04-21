@@ -1579,7 +1579,100 @@ cat("Merged table saved to files/cs_REH_merge.tab\n")
 
 ---
 
-# 9. Loop intersection with ChIP
+# 9.Venn diagram loops
+```{r Venn loops}
+library(VennDiagram)
+library(grid)
+
+#############################################
+# Utility: count lines in file
+#############################################
+count_lines <- function(file) {
+  if (!file.exists(file)) {
+    warning(paste("File not found:", file))
+    return(0)
+  }
+  length(readLines(file))
+}
+
+#############################################
+# Set working directory
+#############################################
+setwd("R:/R_STIK/Hi-C/HiC_marta_Oct25/loops/intersected_loops")
+
+#############################################
+# Count lines in each bedpe file
+#############################################
+only_EP1 <- count_lines("EP1_specific_only_05_10kb_exp30kb.bedpe")
+only_ARO <- count_lines("ARO_specific_only_05_10kb_exp30kb.bedpe")
+only_REH <- count_lines("REH_specific_only_05_10kb_exp30kb.bedpe")
+shared_EP1_ARO <- count_lines("shared_EP1_ARO_only_05_10kb_exp30kb.bedpe")
+shared_EP1_REH <- count_lines("shared_EP1_REH_only_05_10kb_exp30kb.bedpe")
+shared_ARO_REH <- count_lines("shared_ARO_REH_only_05_10kb_exp30kb.bedpe")
+shared_all3 <- count_lines("shared_loops_all3_05_10kb_exp30kb.bedpe")
+
+#############################################
+# Calculate totals and intersections
+#############################################
+# Total areas for each set
+area_EP1 <- only_EP1 + shared_EP1_ARO + shared_EP1_REH + shared_all3
+area_ARO <- only_ARO + shared_EP1_ARO + shared_ARO_REH + shared_all3
+area_REH <- only_REH + shared_EP1_REH + shared_ARO_REH + shared_all3
+
+# Pairwise intersections (including the triple overlap)
+n12 <- shared_EP1_ARO + shared_all3  # EP1 ∩ ARO
+n13 <- shared_EP1_REH + shared_all3  # EP1 ∩ REH
+n23 <- shared_ARO_REH + shared_all3  # ARO ∩ REH
+n123 <- shared_all3                   # EP1 ∩ ARO ∩ REH
+
+#############################################
+# Print summary
+#############################################
+cat("\n=== Three-way Loop Comparison: EP1 vs ARO vs REH ===\n")
+cat("EP1 only:               ", only_EP1, "\n")
+cat("ARO only:               ", only_ARO, "\n")
+cat("REH only:               ", only_REH, "\n")
+cat("Shared EP1 & ARO only:  ", shared_EP1_ARO, "\n")
+cat("Shared EP1 & REH only:  ", shared_EP1_REH, "\n")
+cat("Shared ARO & REH only:  ", shared_ARO_REH, "\n")
+cat("Shared all three:       ", shared_all3, "\n")
+cat("---\n")
+cat("Total EP1:              ", area_EP1, "\n")
+cat("Total ARO:              ", area_ARO, "\n")
+cat("Total REH:              ", area_REH, "\n")
+cat("===\n")
+
+#############################################
+# Create Venn diagram
+#############################################
+venn.plot <- draw.triple.venn(
+  area1 = area_EP1,
+  area2 = area_ARO,
+  area3 = area_REH,
+  n12 = n12,
+  n23 = n23,
+  n13 = n13,
+  n123 = n123,
+  category = c("EP1", "ARO", "REH"),
+  fill = c("lightblue", "lightgreen", "lightyellow"),
+  cat.col = c("darkblue", "darkgreen", "darkorange"),
+  cex = 1.5,
+  cat.cex = 1.5,
+  cat.dist = c(0.05, 0.05, 0.05),
+  main = "Loop comparison: EP1 vs ARO vs REH (±30 kb)"
+)
+
+#############################################
+# Save PDF
+#############################################
+pdf("venn_EP1_ARO_REH_threeway_exp30kb.pdf", width = 8, height = 8)
+grid.draw(venn.plot)
+dev.off()
+
+cat("\nSaved: venn_EP1_ARO_REH_threeway_exp30kb.pdf\n\n")
+```
+
+# 10. Loop intersection with ChIP
 
 ```{r Loop + ChIP}
 # ============================================================================
