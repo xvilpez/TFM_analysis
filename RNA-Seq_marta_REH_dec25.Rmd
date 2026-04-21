@@ -7,8 +7,8 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
-# knitr::opts_knit$set(root.dir ="/ijc/LABS/STIK/RAW/rna_seq/rnaseq_marta_REHAro_dec25") ### If I run it through OnDemand server
-knitr::opts_knit$set(root.dir = "R:/R_STIK/rna_seq/rnaseq_marta_REHAro_dec25") ### If I run it in the workstation
+knitr::opts_knit$set(root.dir ="/ijc/LABS/STIK/RAW/rna_seq/rnaseq_marta_REHAro_dec25") ### If I run it through OnDemand server
+# knitr::opts_knit$set(root.dir = "R:/R_STIK/rna_seq/rnaseq_marta_REHAro_dec25") ### If I run it in the workstation
 ```
 
 ```{r initialization, warning=FALSE, message=FALSE}
@@ -1117,8 +1117,8 @@ cat("\n=== ChIP-SEQ PEAK TO TSS DISTANCE ANALYSIS ===\n\n")
 
 library(GenomicRanges)
 
-# chip_path <- "/mnt/beegfs/xvilchez/chip_publicdata/697HF_E2APBX1-HF_peaks.bed"
-chip_path <- "R:/R_STIK/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed"
+chip_path <- "/mnt/beegfs/xvilchez/chip_publicdata/697HF_E2APBX1-HF_peaks.bed"
+# chip_path <- "R:/R_STIK/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed"
 
 if (!file.exists(chip_path)) {
   stop("ChIP-seq peak file not found at: ", chip_path)
@@ -1134,7 +1134,7 @@ peaks_gr <- GRanges(
 
 cat(paste0("Loaded ", length(peaks_gr), " ChIP-seq peaks\n"))
 
-genes_bed <- read.table("R:/R_STIK/xavi_scripts/genes_gencode.v28.bed",
+genes_bed <- read.table("/ijc/LABS/STIK/RAW/xavi_scripts/genes_gencode.v28.bed",
                         sep = "\t", header = FALSE,
                         col.names = c("chrom", "start", "end", "strand",
                                       "gene_name", "ID", "description")) %>%
@@ -3020,8 +3020,8 @@ cat("\n=== Loop vs Random analysis complete — plots saved to Loops/ ===\n")
 ```
 
 ```{r Compartment intersection}
-data <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore/Comp_Analysis/files/cs_REH_merge.tab"
-# data <- "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore/Comp_Analysis/files/cs_REH_merge.tab"
+# data <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore/Comp_Analysis/files/cs_REH_merge.tab"
+data <- "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore/Comp_Analysis/files/cs_REH_merge.tab"
 
 cs_REH_merge <- read.table(data,
                             sep       = "\t",
@@ -3190,10 +3190,16 @@ counts_boxplot <- ggplot(
   counts_comp,
   aes(x = condition, y = log2_centered, fill = switching)
 ) +
+  geom_violin(
+    alpha     = 0.4,
+    linewidth = 0.3,
+    trim      = FALSE
+  ) +
   geom_boxplot(
+    width         = 0.25,
     outlier.size  = 0.4,
     outlier.alpha = 0.3,
-    alpha         = 0.7,
+    alpha         = 0.8,
     linewidth     = 0.4
   ) +
   geom_hline(
