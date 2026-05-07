@@ -7,8 +7,8 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
-knitr::opts_knit$set(root.dir ="/ijc/LABS/STIK/RAW/rna_seq/rnaseq_marta_REHAro_dec25") ### If I run it through OnDemand server
-# knitr::opts_knit$set(root.dir = "R:/R_STIK/rna_seq/rnaseq_marta_REHAro_dec25") ### If I run it in the workstation
+#knitr::opts_knit$set(root.dir ="/ijc/LABS/STIK/RAW/rna_seq/rnaseq_marta_REHAro_dec25") ### If I run it through OnDemand server
+knitr::opts_knit$set(root.dir = "R:/R_STIK/rna_seq/rnaseq_marta_REHAro_dec25") ### If I run it in the workstation
 ```
 
 ```{r initialization, warning=FALSE, message=FALSE}
@@ -1112,13 +1112,97 @@ cat("Files saved to:", full_enrichr_export_dir, "\n")
 cat("Total files written:", length(names(all_cluster_enrichr_results)) * length(dbs), "\n")
 ```
 
+```{r Cluster 1 and 8 combined enrichment}
+cat("\n=== Combined enrichR enrichment: Clusters 1 & 8 ===\n\n")
+
+# Pull genes from clusters 1 and 8
+combined_genes <- unique(c(
+  cluster_gene_lists[["1"]],
+  cluster_gene_lists[["8"]]
+))
+cat("Genes in Cluster 1:", length(cluster_gene_lists[["1"]]), "\n")
+cat("Genes in Cluster 8:", length(cluster_gene_lists[["8"]]), "\n")
+cat("Total unique genes (combined):", length(combined_genes), "\n\n")
+
+combined_enrichr_results <- list()
+
+if (length(combined_genes) > 0 && websiteLive) {
+  
+  enriched_combined <- enrichr(combined_genes, dbs)
+  combined_enrichr_results <- enriched_combined
+  
+  for (db_idx in seq_along(dbs)) {
+    db_name <- dbs[db_idx]
+    
+    if (!is.null(enriched_combined[[db_idx]]) && nrow(enriched_combined[[db_idx]]) > 0) {
+      
+      enriched_processed <- process_enrichr_db(enriched_combined[[db_idx]])
+      
+      sig_terms <- subset(enriched_processed, Adjusted.P.value < 0.1)
+      if (nrow(sig_terms) > 0) {
+        
+        file_prefix <- paste0("Clusters1_8_combined_", db_name)
+        save_enrichr_genelists(sig_terms, file_prefix, clusters_genelists_dir)
+        
+        p <- plot_enrichr(
+          sig_terms,
+          title_str = paste(db_name, "- Clusters 1 & 8 (combined)"),
+          xlab_str  = paste(db_name, "Terms (Clusters 1 & 8 combined)")
+        )
+        print(p)
+        ggsave(
+          file.path(clusters_dir, paste0("enrichR_", db_name, "_Clusters1_8_combined.pdf")),
+          p, width = 10, height = 7
+        )
+        cat("  Plot + gene lists saved for", db_name, "(Clusters 1 & 8 combined)\n")
+      } else {
+        cat("  No significant results for", db_name, "(Clusters 1 & 8 combined)\n")
+      }
+    }
+  }
+  
+  # ── Export full results ──────────────────────────────────────────────────
+  cat("\n--- Exporting full results for Clusters 1 & 8 combined ---\n")
+  for (db_idx in seq_along(dbs)) {
+    db_name   <- dbs[db_idx]
+    db_result <- enriched_combined[[db_idx]]
+    
+    if (is.null(db_result) || nrow(db_result) == 0) {
+      cat("  Empty result for", db_name, "\n")
+      next
+    }
+    
+    db_processed <- process_enrichr_db(db_result) %>%
+      arrange(P.value) %>%
+      select(Term, Gene_count, total, gene_ratio,
+             P.value, Adjusted.P.value, Combined.Score, Genes)
+    
+    cat("  ", db_name, ":", nrow(db_processed), "terms | best P.value:",
+        formatC(min(db_processed$P.value), format = "e", digits = 2),
+        "| best adj.P:", formatC(min(db_processed$Adjusted.P.value), format = "e", digits = 2), "\n")
+    
+    out_file <- file.path(
+      full_enrichr_export_dir,
+      paste0("Clusters1_8_combined_", db_name, "_ALL_terms.tsv")
+    )
+    write.table(db_processed, out_file, sep = "\t", row.names = FALSE, quote = FALSE)
+  }
+  
+} else {
+  cat("No genes found or enrichR unavailable — skipping.\n")
+}
+
+cat("\n=== Combined Clusters 1 & 8 enrichment complete ===\n")
+```
+
+
 ```{r ChIP-seq Peak to TSS Distance Analysis}
 cat("\n=== ChIP-SEQ PEAK TO TSS DISTANCE ANALYSIS ===\n\n")
 
 library(GenomicRanges)
 
-chip_path <- "/mnt/beegfs/xvilchez/chip_publicdata/697HF_E2APBX1-HF_peaks.bed"
-# chip_path <- "R:/R_STIK/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed"
+#chip_path <- "/mnt/beegfs/xvilchez/chip_publicdata/697HF_E2APBX1-HF_peaks.bed"
+chip_path <- "R:/R_STIK/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed"
 
 if (!file.exists(chip_path)) {
   stop("ChIP-seq peak file not found at: ", chip_path)
@@ -1134,7 +1218,7 @@ peaks_gr <- GRanges(
 
 cat(paste0("Loaded ", length(peaks_gr), " ChIP-seq peaks\n"))
 
-genes_bed <- read.table("/ijc/LABS/STIK/RAW/xavi_scripts/genes_gencode.v28.bed",
+genes_bed <- read.table("R:/R_STIK/xavi_scripts/genes_gencode.v28.bed",
                         sep = "\t", header = FALSE,
                         col.names = c("chrom", "start", "end", "strand",
                                       "gene_name", "ID", "description")) %>%
