@@ -21,8 +21,8 @@ knitr::opts_chunk$set(
   message = FALSE,
   fig.align = "center"
 )
- knitr::opts_knit$set(root.dir = "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore")
-#knitr::opts_knit$set(root.dir = "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore")
+ # knitr::opts_knit$set(root.dir = "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore")
+knitr::opts_knit$set(root.dir = "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore")
 
 ```
 
@@ -80,8 +80,8 @@ All bedgraph files are loaded from the cscore iteration trial directory.
 Each file contains four columns: `chr`, `start`, `end`, and the cscore `score`.
 
 ```{r load-data}
- data_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore"
-#data_dir <-"/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore"
+ # data_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore"
+data_dir <-"/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore"
 
 read_cscore <- function(filename, score_colname) {
   read.table(file.path(data_dir, filename),
@@ -1112,12 +1112,12 @@ library(tidyr)
 # ----------------------------------------------------------------------------
 # Load ChIP-seq peaks BED
 # ----------------------------------------------------------------------------
-peaks_bed <- read.table("R:/R_STIK/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed",
+peaks_bed <- read.table("/ijc/LABS/STIK/RAW/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed",
                         sep       = "\t",
                         header    = FALSE,
                         col.names = c("chrom", "start", "end")
                         [1:ncol(read.table(
-                        "R:/R_STIK/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed",
+                        "/ijc/LABS/STIK/RAW/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed",
                         sep = "\t", nrows = 1))]) %>%
   select(chrom = 1, start = 2, end = 3) %>%
   mutate(start = as.integer(start),
@@ -1133,12 +1133,16 @@ peaks_gr <- makeGRangesFromDataFrame(peaks_bed,
 cat("Total peaks loaded:", length(peaks_gr), "\n")
 
 # ----------------------------------------------------------------------------
-# Overlap peaks with every switching class
+# Overlap peaks with ALL switching classes (needed for background calculation)
 # ----------------------------------------------------------------------------
-all_switching_levels <- c("A_A_A", "B_B_B",
-                           "B_A_A", "B_B_A",
-                           "A_B_B", "A_A_B",
-                           "A_B_A", "B_A_B")
+all_switching_levels     <- c("A_A_A", "B_B_B",
+                               "B_A_A", "B_B_A",
+                               "A_B_B", "A_A_B",
+                               "A_B_A", "B_A_B")
+
+switching_dynamic_levels <- c("B_A_A", "B_B_A",
+                               "A_B_B", "A_A_B",
+                               "A_B_A", "B_A_B")
 
 overlap_counts <- lapply(all_switching_levels, function(sw) {
 
@@ -1164,7 +1168,7 @@ overlap_counts <- lapply(all_switching_levels, function(sw) {
 }) %>% bind_rows()
 
 # ----------------------------------------------------------------------------
-# Background: all bins pooled
+# Background: ALL bins pooled (including constitutive — for a fair background)
 # ----------------------------------------------------------------------------
 bg_counts <- overlap_counts %>%
   summarise(n_bins    = sum(n_bins),
@@ -1178,67 +1182,60 @@ cat(sprintf("Background: %d bins, %d with peak (%.2f%%)\n",
             bg_counts$n_bins, bg_bins_with, background_pct))
 
 # ----------------------------------------------------------------------------
-# Fisher's exact test for each switching class vs constitutive background
+# Fisher's exact test — ALL classes
 # ----------------------------------------------------------------------------
-# switching_classes <- setdiff(all_switching_levels, c("A_A_A", "B_B_B"))
-switching_classes <- all_switching_levels
-
-fisher_results <- lapply(switching_classes, function(sw) {
+fisher_results <- lapply(all_switching_levels, function(sw) {
 
   sw_row <- overlap_counts %>% filter(switching == sw)
 
   sw_with    <- sw_row$n_overlap
   sw_without <- sw_row$n_bins - sw_row$n_overlap
 
-  # 2x2 contingency table:
-  #              Peak    No Peak
-  # Switching  [ sw_with,    sw_without ]
-  # Background [ bg_with,    bg_without ]
-  ct <- matrix(c(sw_with,    sw_without,
-                 bg_bins_with, bg_bins_without),
-               nrow = 2, byrow = TRUE,
+  # REMOVE current class from background
+  bg_with    <- bg_bins_with    - sw_with
+  bg_without <- bg_bins_without - sw_without
+
+  ct <- matrix(c(sw_with, sw_without,
+                 bg_with, bg_without),
+               nrow = 2,
+               byrow = TRUE,
                dimnames = list(c("Switching", "Background"),
                                c("Peak", "No_Peak")))
 
-ft <- fisher.test(ct, alternative = "two.sided")
+  ft <- fisher.test(ct)
 
   data.frame(
-    switching  = sw,
-    n_bins     = sw_row$n_bins,
-    n_overlap  = sw_with,
-    pct_overlap = sw_row$pct_overlap,
-    OR         = ft$estimate,
-    CI_low     = ft$conf.int[1],
-    CI_high    = ft$conf.int[2],
-    p_value    = ft$p.value
+    switching       = sw,
+    n_bins          = sw_row$n_bins,
+    n_overlap       = sw_with,
+    pct_overlap     = sw_row$pct_overlap,
+    OR              = unname(ft$estimate),
+    CI_low          = ft$conf.int[1],
+    CI_high         = ft$conf.int[2],
+    p_value         = ft$p.value
   )
 }) %>% bind_rows()
 
-# Multiple testing correction (BH)
+# Multiple testing correction
 fisher_results <- fisher_results %>%
   mutate(
-    p_adj          = p.adjust(p_value, method = "BH"),
-    significance   = case_when(
+    p_adj = p.adjust(p_value, method = "BH"),
+
+    significance = case_when(
       p_adj < 0.001 ~ "***",
       p_adj < 0.01  ~ "**",
       p_adj < 0.05  ~ "*",
       TRUE          ~ "ns"
     ),
+
     fold_enrichment = pct_overlap / background_pct,
-    switching       = factor(switching, levels = all_switching_levels)
+
+    switching = factor(switching, levels = all_switching_levels)
   )
 
-print(fisher_results[, c("switching", "n_bins", "n_overlap",
-                          "pct_overlap", "fold_enrichment",
-                          "OR", "CI_low", "CI_high",
-                          "p_value", "p_adj", "significance")])
-
-# Also add fold enrichment to full overlap_counts for plotting
-overlap_counts <- overlap_counts %>%
-  mutate(
-    fold_enrichment = pct_overlap / background_pct,
-    switching       = factor(switching, levels = all_switching_levels)
-  )
+write.csv(fisher_results,
+          file.path(files_dir, "EP1_fisher_results.csv"),
+          row.names = FALSE)
 
 # ----------------------------------------------------------------------------
 # Annotate each bin with peak overlap for boxplot
@@ -1256,43 +1253,33 @@ cs_REH_merge <- cs_REH_merge %>%
   )
 
 # ----------------------------------------------------------------------------
-# Spie polar plot — angular width = bin proportion, radius = fold enrichment
+# Prepare overlap_counts_plot — DYNAMIC classes only, with significance joined
 # ----------------------------------------------------------------------------
-
-# After fisher_results is built, join significance into overlap_counts FIRST
-overlap_counts <- overlap_counts %>%
-  left_join(fisher_results %>% select(switching, significance),   # significance only
-            by = "switching")
-
-# 1. Compute cumulative angles from bin proportions (like the spie approach)
-total_bins <- sum(overlap_counts$n_bins)
-
-overlap_counts <- overlap_counts %>%
-  arrange(factor(switching, levels = all_switching_levels)) %>%
+overlap_counts_plot <- overlap_counts %>%
+  filter(switching %in% switching_dynamic_levels) %>%
+  left_join(fisher_results %>% select(switching, significance, fold_enrichment),
+            by = "switching") %>%
+  mutate(switching = factor(switching, levels = switching_dynamic_levels)) %>%
+  arrange(switching) %>%
   mutate(
-    bin_prop  = n_bins / total_bins,          # fractional width of each slice
-    angle_end = cumsum(bin_prop),             # cumulative end position [0–1]
-    angle_mid = angle_end - bin_prop / 2,    # midpoint for label placement
-    pos_x     = cumsum(bin_prop) - bin_prop  # left edge in [0–1] space (for geom_bar x)
+    bin_prop  = n_bins / sum(n_bins),
+    angle_end = cumsum(bin_prop),
+    pos_x     = cumsum(bin_prop) - bin_prop,
+    pos_mid   = pos_x + bin_prop / 2
   )
 
-# 2. The spie x-axis position = midpoint of each slice in cumulative proportion space
-#    geom_bar width = bin_prop, x = midpoint of that slice
-overlap_counts <- overlap_counts %>%
-  mutate(pos_mid = pos_x + bin_prop / 2)
+# ----------------------------------------------------------------------------
+# Plot 1 — Spie polar plot (dynamic classes only)
+# ----------------------------------------------------------------------------
+overlap_polar <- ggplot(overlap_counts_plot, aes(x = pos_mid)) +
 
-# 3. Build the plot
-overlap_polar <- ggplot(overlap_counts, aes(x = pos_mid)) +
-
-  # Bars: width encodes bin proportion, height encodes fold enrichment
   geom_bar(
     aes(y = fold_enrichment, fill = switching, width = bin_prop),
-    color = "black",
+    color     = "black",
     linewidth = 0.35,
-    stat = "identity"
+    stat      = "identity"
   ) +
 
-  # Reference line at background level (fold = 1)
   geom_hline(
     yintercept = 1,
     linetype   = "dashed",
@@ -1300,33 +1287,30 @@ overlap_polar <- ggplot(overlap_counts, aes(x = pos_mid)) +
     linewidth  = 0.5
   ) +
 
-  # Significance labels just above each bar
   geom_text(
-  data = overlap_counts %>% filter(significance != "ns"),
-  aes(
-    x     = pos_mid,
-    y     = fold_enrichment + max(overlap_counts$fold_enrichment) * 0.10,
-    label = significance
-  ),
-  size     = 4,
-  fontface = "bold",
-  color    = "gray20"
-) +
+    data = overlap_counts_plot %>% filter(significance != "ns"),
+    aes(
+      x     = pos_mid,
+      y     = fold_enrichment + max(overlap_counts_plot$fold_enrichment) * 0.10,
+      label = significance
+    ),
+    size     = 4,
+    fontface = "bold",
+    color    = "gray20"
+  ) +
 
-  # Convert to polar (x = angle, wraps the bar widths around the circle)
   coord_polar(theta = "x") +
 
-  # Custom x-axis labels at the midpoint of each slice
-  scale_x_continuous(breaks = NULL, labels = NULL)  +
+  scale_x_continuous(breaks = NULL, labels = NULL) +
 
   scale_y_continuous(
-    limits = c(0, max(overlap_counts$fold_enrichment) * 1.3),
-    breaks = c(1, 1.5, 2, 2.5)   # adjust to your data range
+    limits = c(0, max(overlap_counts_plot$fold_enrichment) * 1.3),
+    breaks = c(1, 1.5, 2, 2.5)
   ) +
 
   scale_fill_manual(
-    values = switching_colors,
-    name   = "Switching\n(REH_EP1_EP1Aro)"
+    values = switching_colors[switching_dynamic_levels],
+    name   = "Switching\n(REH_EP1_Aro)"
   ) +
 
   theme_bw() +
@@ -1341,7 +1325,7 @@ overlap_polar <- ggplot(overlap_counts, aes(x = pos_mid)) +
   ) +
 
   ylab("Fold enrichment over pooled background") +
-  labs(title = "E2A-PBX1 peak enrichment per compartment switching class\n(REH_EP1_EP1Aro)")
+  labs(title = "E2A-PBX1 peak enrichment per compartment switching class\n(REH_EP1_Aro)")
 
 print(overlap_polar)
 ggsave(
@@ -1351,7 +1335,7 @@ ggsave(
 )
 
 # ----------------------------------------------------------------------------
-# Plot 2 — Forest plot: Odds Ratio + 95% CI per switching class
+# Plot 2 — Forest plot (dynamic classes only)
 # ----------------------------------------------------------------------------
 forest_plot <- ggplot(fisher_results,
                       aes(x = OR, y = switching, color = switching)) +
@@ -1362,15 +1346,15 @@ forest_plot <- ggplot(fisher_results,
   geom_point(size = 3.5) +
   geom_text(aes(label = significance, x = CI_high),
             hjust = -0.4, size = 5, color = "black") +
-  scale_color_manual(values = switching_colors,
-                     name   = "Switching class") +
+  scale_color_manual(values = switching_colors[all_switching_levels],
+                   name   = "Switching class") +
   scale_x_log10() +
   theme_bw() +
   theme(
-    axis.text.y  = element_text(size = 11, face = "bold"),
-    axis.text.x  = element_text(size = 10),
-    axis.title   = element_text(size = 12),
-    plot.title   = element_text(hjust = 0.5, face = "bold", size = 13),
+    axis.text.y        = element_text(size = 11, face = "bold"),
+    axis.text.x        = element_text(size = 10),
+    axis.title         = element_text(size = 12),
+    plot.title         = element_text(hjust = 0.5, face = "bold", size = 13),
     panel.grid.major.y = element_blank(),
     panel.grid.minor   = element_blank(),
     legend.position    = "none"
@@ -1378,6 +1362,7 @@ forest_plot <- ggplot(fisher_results,
   xlab("Odds Ratio (log scale) vs pooled background") +
   ylab("Switching class") +
   labs(title = "Fisher's exact test: E2A-PBX1 peak enrichment\nvs all bins")
+
 print(forest_plot)
 ggsave(file.path(plots_dir, "EP1_fisher_forest.pdf"), forest_plot, width = 8, height = 5)
 
@@ -1429,9 +1414,11 @@ cscore_EP1_box <- ggplot(box_df, aes(x = Condition, y = cscore, fill = fill_grou
   ) +
   xlab("Condition") + ylab("cscore") +
   labs(title = "cscore distribution – bins overlapping E2A-PBX1 peaks vs non-overlapping")
+
 print(cscore_EP1_box)
 ggsave(file.path(plots_dir, "EP1_overlap_cscore.pdf"), cscore_EP1_box, width = 10, height = 6)
 ```
+
 ```{r ChIP-Seq intersection Top25}
 # ============================================================================
 # Intersection of switching compartments with Top25 ChIP-seq peaks
