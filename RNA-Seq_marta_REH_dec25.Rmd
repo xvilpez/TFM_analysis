@@ -3440,24 +3440,21 @@ for (i in seq_len(nrow(comp_gene_lists))) {
 
 cat("\n=== Compartment enrichR analysis complete ===\n")
 ```
+
 ```{r TAD intersection}
 
-cat("\n=== TAD BOUNDARY GENE ANALYSIS (3-WAY COMPARISON) ===\n\n")
+cat("\n=== TAD BOUNDARY GENE ANALYSIS (ONLY REH vs EP1 Comparison) ===\n\n")
 
 # ----------------------------------------------------------------------------
 # 1. Load TAD boundary BED files + random regions
 # ----------------------------------------------------------------------------
-tad_dir    <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/TADs/comparison"
-random_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/TADs/comparison/atac_coverage"
+tad_dir    <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/TADs/EP1_vs_REH_comparison"
+random_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/TADs/EP1_vs_REH_comparison/atac_coverage"
 
 tad_files <- list(
-  shared_all_three      = list(file = file.path(tad_dir, "shared_all_three.bed"),                             label = "shared_all"),
-  shared_REH_EP1        = list(file = file.path(tad_dir, "shared_pairwise_REH_HiC-REH-EP1.bed"),              label = "shared_REH_EP1"),
-  shared_REH_Aro        = list(file = file.path(tad_dir, "shared_pairwise_REH_HiC-REH-EP1-Aro.bed"),          label = "shared_REH_Aro"),
-  shared_EP1_Aro        = list(file = file.path(tad_dir, "shared_pairwise_HiC-REH-EP1_HiC-REH-EP1-Aro.bed"),  label = "shared_EP1_Aro"),
-  specific_REH          = list(file = file.path(tad_dir, "specific_to_REH.bed"),                              label = "specific_REH"),
-  specific_EP1          = list(file = file.path(tad_dir, "specific_to_HiC-REH-EP1.bed"),                      label = "specific_EP1"),
-  specific_Aro          = list(file = file.path(tad_dir, "specific_to_HiC-REH-EP1-Aro.bed"),                  label = "specific_Aro")
+  shared_all_three      = list(file = file.path(tad_dir, "shared_boundaries_filtered.bed"),                             label = "shared"),
+  specific_REH          = list(file = file.path(tad_dir, "unique_to_REH_boundaries.bed"),                              label = "specific_REH"),
+  specific_EP1          = list(file = file.path(tad_dir, "unique_to_HiC-REH-EP1_boundaries.bed"),                      label = "specific_EP1")
 )
 
 tad_gr_list <- list()
@@ -3523,7 +3520,7 @@ mat_corrected_tad <- removeBatchEffect(
 mat_centered_tad <- t(scale(t(mat_corrected_tad), center = TRUE, scale = FALSE))
 
 # ----------------------------------------------------------------------------
-# 4. Long format + condition labels — now keeping all 3 conditions
+# 4. Long format + condition labels 
 # ----------------------------------------------------------------------------
 counts_long_tad <- as.data.frame(mat_centered_tad) %>%
   tibble::rownames_to_column("gene_name") %>%
@@ -3536,7 +3533,7 @@ counts_long_tad <- as.data.frame(mat_centered_tad) %>%
     as.data.frame(colData(dds)) %>%
       tibble::rownames_to_column("sample") %>%
       select(sample, condition) %>%
-      mutate(condition = factor(condition, levels = c("REH", "EP1", "Aro"))),
+      mutate(condition = factor(condition, levels = c("REH", "EP1"))),
     by = "sample"
   )
 
@@ -3544,15 +3541,14 @@ counts_long_tad <- as.data.frame(mat_centered_tad) %>%
 # 5. Join TAD gene map with expression data
 # ----------------------------------------------------------------------------
 tad_category_levels <- c(
-  "shared_all",
-  "shared_REH_EP1", "shared_REH_Aro", "shared_EP1_Aro",
-  "specific_REH", "specific_EP1", "specific_Aro",
+  "shared",
+  "specific_REH", "specific_EP1",
   "random"
 )
 
 counts_tad <- tad_gene_map %>%
   inner_join(counts_long_tad, by = "gene_name") %>%
-  filter(condition %in% c("REH", "EP1", "Aro")) %>%
+  filter(condition %in% c("REH", "EP1")) %>%
   mutate(tad_category = factor(tad_category, levels = tad_category_levels))
 
 cat("Genes per condition × TAD category matched in expression matrix:\n")
@@ -3596,8 +3592,7 @@ gene_means_tad <- counts_tad %>%
   summarise(mean_log2 = mean(log2_centered), .groups = "drop")
 
 tad_cats_to_test <- c(
-  "shared_all", "shared_REH_EP1", "shared_REH_Aro", "shared_EP1_Aro",
-  "specific_REH", "specific_EP1", "specific_Aro"
+  "shared", "specific_REH", "specific_EP1"
 )
 
 wilcox_tad <- gene_means_tad %>%
@@ -3644,13 +3639,9 @@ bracket_tad <- wilcox_tad %>%
 # 9. Color palette for 8 categories
 # ----------------------------------------------------------------------------
 tad_colors <- c(
-  "shared_all"     = "#525252",   # dark gray  — shared by everyone
-  "shared_REH_EP1" = "#8c96c6",   # lilac      — REH + EP1
-  "shared_REH_Aro" = "#88419d",   # purple     — REH + Aro
-  "shared_EP1_Aro" = "#8856a7",   # medium purple — EP1 + Aro
+  "shared"     = "#525252",   # dark gray  — shared by everyone
   "specific_REH"   = "#4393c3",   # blue       — REH only
   "specific_EP1"   = "#d6604d",   # red-orange — EP1 only
-  "specific_Aro"   = "#f4a582",   # salmon     — Aro only
   "random"         = "#b8b8b8"    # light gray — background control
 )
 
@@ -3719,9 +3710,9 @@ ggsave(file.path(tad_out_dir, "tad_boundary_counts_boxplot.pdf"),
 # ----------------------------------------------------------------------------
 cat("\n=== DEG OVERLAP WITH TAD BOUNDARIES ===\n\n")
 
-all_deg_genes_tad <- unique(unlist(lapply(all_results, function(df) {
-  df %>% filter(diffexpressed != "NO") %>% pull(gene)
-})))
+all_deg_genes_tad <- all_results[["EP1_vs_REH"]] %>%   # <- use your actual list name
+  filter(diffexpressed != "NO") %>%
+  pull(gene)
 
 deg_tad_overlap <- tad_gene_map %>%
   mutate(is_DEG = gene_name %in% all_deg_genes_tad) %>%
