@@ -427,6 +427,76 @@ print(p_pca_after)
 ggsave(file.path(qc_dir, "PCA_withoutGFP_after_batch_correction.pdf"), p_pca_after, width = 8, height = 6)
 ```
 
+```{r Global Expression Levels per Condition - Log2 Mean-Centered}
+# --- 1. Extract normalized counts and apply log2 + mean-centering ---
+norm_counts <- counts(dds, normalized = TRUE)
+log2_counts <- log2(norm_counts + 1)
+
+# Mean-center each gene across all samples (row-wise centering)
+log2_centered <- log2_counts - rowMeans(log2_counts)
+
+# Melt to long format
+centered_long <- as.data.frame(log2_centered) %>%
+  rownames_to_column("gene") %>%
+  pivot_longer(-gene, names_to = "sample", values_to = "log2_centered") %>%
+  left_join(as.data.frame(colData(dds)) %>% rownames_to_column("sample"), by = "sample")
+
+# --- 2. Boxplot per sample (QC: should be symmetric around 0) ---
+p_box_sample <- ggplot(centered_long, aes(x = sample, y = log2_centered, fill = condition)) +
+  geom_boxplot(outlier.size = 0.3, outlier.alpha = 0.4) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Global Expression – log2 Mean-Centered (per sample)",
+       x = NULL, y = "log2(Norm Counts + 1) – mean-centered") +
+  scale_fill_brewer(palette = "Set2")
+print(p_box_sample)
+ggsave(file.path(qc_dir, "GlobalExpression_log2centered_per_sample.pdf"), p_box_sample, width = 8, height = 5)
+
+# --- 3. Summarise by condition (average centered value per gene) ---
+condition_summary <- centered_long %>%
+  group_by(gene, condition) %>%
+  summarise(mean_centered = mean(log2_centered), .groups = "drop")
+
+# --- 4. Boxplot per condition ---
+p_box_cond <- ggplot(condition_summary, aes(x = condition, y = mean_centered, fill = condition)) +
+  geom_boxplot(outlier.size = 0.3, outlier.alpha = 0.4) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  geom_jitter(width = 0.1, alpha = 0.01, size = 0.2) +
+  theme_bw() +
+  labs(title = "Global Expression per Condition – log2 Mean-Centered",
+       x = "Condition", y = "Mean log2 centered expression") +
+  scale_fill_brewer(palette = "Set2")
+print(p_box_cond)
+ggsave(file.path(qc_dir, "GlobalExpression_log2centered_per_condition.pdf"), p_box_cond, width = 7, height = 5)
+
+# --- 5. Violin + boxplot per condition ---
+p_violin <- ggplot(condition_summary, aes(x = condition, y = mean_centered, fill = condition)) +
+  geom_violin(trim = FALSE, alpha = 0.7) +
+  geom_boxplot(width = 0.1, fill = "white", outlier.size = 0.3) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  theme_bw() +
+  labs(title = "Global Expression per Condition – Violin (log2 Mean-Centered)",
+       x = "Condition", y = "Mean log2 centered expression") +
+  scale_fill_brewer(palette = "Set2")
+print(p_violin)
+ggsave(file.path(qc_dir, "GlobalExpression_log2centered_violin_per_condition.pdf"), p_violin, width = 7, height = 5)
+
+# --- 6. Summary statistics ---
+expr_stats <- condition_summary %>%
+  group_by(condition) %>%
+  summarise(
+    median  = median(mean_centered),
+    mean    = mean(mean_centered),
+    sd      = sd(mean_centered),
+    pct25   = quantile(mean_centered, 0.25),
+    pct75   = quantile(mean_centered, 0.75),
+    .groups = "drop"
+  )
+cat("\n### Global Expression Summary (log2 Mean-Centered) ###\n")
+print(expr_stats)
+```
+
 ## Differential Expression Analysis with LFC Shrinkage
 
 ```{r Helper functions}
@@ -2034,6 +2104,213 @@ if (!homer_chip_ready) {
   print(p_peaks_cluster_summary)
   ggsave(file.path(homer_chip_dir, "motif_sig_count_per_cluster_chip_peaks.pdf"),
          p_peaks_cluster_summary, width = 8, height = 6)
+}
+```
+
+```{r TF Expression from ChIP Motifs Across Clusters, fig.width=12, fig.height=10}
+
+cat("\n=== TF EXPRESSION FROM ChIP MOTIF ENRICHMENT ACROSS CLUSTERS ===\n\n")
+
+if (!homer_chip_ready) {
+  message("Skipping — HOMER ChIP results not yet available.")
+} else {
+
+  # ── STEP 0: Rebuild col_order + ann_col safely ───────────────────────────────
+  ep1_samples <- rownames(colData(dds))[colData(dds)$condition == "EP1"]
+  aro_samples <- rownames(colData(dds))[colData(dds)$condition == "Aro"]
+  reh_samples <- rownames(colData(dds))[colData(dds)$condition == "REH"]
+  col_order   <- c(reh_samples, ep1_samples, aro_samples)
+
+  ann_col <- data.frame(
+    condition = colData(dds)$condition,
+    row.names = rownames(colData(dds))
+  )[col_order, , drop = FALSE]
+
+  # ── STEP 1: Extract TF candidates + build HOMER→HGNC lookup table ────────────
+  homer_sig <- homer_peaks_combined %>%
+    filter(`P-value` < 0.05) %>%
+    mutate(
+      TF_raw   = trimws(gsub("/.*", "", Motif_Clean)),
+      TF_upper = toupper(TF_raw)
+    )
+
+  homer_to_hgnc <- list(
+    "Barx"         = c("BARX1", "BARX2"),
+    "Phox2b"       = c("PHOX2B", "PHOX2A"),
+    "Hoxa"         = c("HOXA1","HOXA2","HOXA3","HOXA4","HOXA5","HOXA6","HOXA7","HOXA9","HOXA10","HOXA11","HOXA13"),
+    "Hoxd"         = c("HOXD1","HOXD3","HOXD4","HOXD8","HOXD9","HOXD10","HOXD11","HOXD12","HOXD13"),
+    "Mef2c"        = c("MEF2C"),
+    "Mef2b"        = c("MEF2B"),
+    "Mef2a"        = c("MEF2A"),
+    "MafB"         = c("MAFB"),
+    "Smad"         = c("SMAD1","SMAD2","SMAD3","SMAD4","SMAD5","SMAD7","SMAD9"),
+    "Nkx2."        = c("NKX2-1","NKX2-2","NKX2-3","NKX2-5","NKX2-6"),
+    "STAT"         = c("STAT1","STAT2","STAT3","STAT4","STAT5A","STAT5B","STAT6"),
+    "Fli"          = c("FLI1"),
+    "Atf"          = c("ATF1","ATF2","ATF3","ATF4","ATF6","ATF7"),
+    "Otx"          = c("OTX1","OTX2"),
+    "Zic"          = c("ZIC1","ZIC2","ZIC3","ZIC4","ZIC5"),
+    "Foxo"         = c("FOXO1","FOXO3","FOXO4","FOXO6"),
+    "FOXP"         = c("FOXP1","FOXP2","FOXP3","FOXP4"),
+    "FOXK"         = c("FOXK1","FOXK2"),
+    "Zfp"          = c("ZNF263","ZNF24"),
+    "ZNF"          = c("ZNF263","ZNF24","ZNF143"),
+    "PRDM"         = c("PRDM1","PRDM2","PRDM4","PRDM5","PRDM6","PRDM9","PRDM14","PRDM16"),
+    "GATA"         = c("GATA1","GATA2","GATA3","GATA4","GATA5","GATA6"),
+    "TFE"          = c("TFEB","TFEC","TFE3"),
+    "NRF"          = c("NFE2L1","NFE2L2","NFE2L3"),
+    "EKLF"         = c("KLF1"),
+    "Klf"          = c("KLF1","KLF2","KLF3","KLF4","KLF5","KLF6","KLF9","KLF10","KLF11","KLF12","KLF13"),
+    "KLF"          = c("KLF1","KLF2","KLF3","KLF4","KLF5","KLF6","KLF9","KLF10","KLF11","KLF12","KLF13"),
+    "E2F"          = c("E2F1","E2F2","E2F3","E2F4","E2F5","E2F6","E2F7","E2F8"),
+    "RAR:RXR"      = c("RARA","RARB","RARG","RXRA","RXRB","RXRG"),
+    "ZBTB"         = c("ZBTB7A","ZBTB7B","ZBTB16","ZBTB33","ZBTB48"),
+    "Tbx"          = c("TBX1","TBX2","TBX3","TBX4","TBX5","TBX19","TBX21"),
+    "MYB"          = c("MYB","MYBL1","MYBL2"),
+    "AMYB"         = c("MYBL1"),
+    "BMYB"         = c("MYBL2"),
+    "NFATC"        = c("NFATC1","NFATC2","NFATC3","NFATC4"),
+    "Twist"        = c("TWIST1","TWIST2"),
+    "CREB"         = c("CREB1","CREB3","CREB5","CREBBP","ATF1"),
+    "Tbet"         = c("TBX21"),
+    "Nur"          = c("NR4A1","NR4A2","NR4A3"),
+    "Tgif"         = c("TGIF1","TGIF2"),
+    "FXR"          = c("NR1H4","NR1H3"),
+    "CRX"          = c("CRX","OTX2"),
+    "MYNN"         = c("MYNN"),
+    "GFY"          = c("SPDEF"),
+    "DMRT"         = c("DMRT1","DMRT2","DMRT3"),
+    "NF1:FOXA"     = c("NFIA","NFIB","NFIC","NFIX","FOXA1","FOXA2","FOXA3"),
+    "NF"           = c("NFIA","NFIB","NFIC","NFIX"),
+    "NFkB2-p"      = c("NFKB2","NFKB1","RELA","RELB","REL"),
+    "EWS:ERG-fusion" = c("ERG","EWSR1"),
+    "Ets1-distal"  = c("ETS1","ETS2"),
+    "AR-halfsite"  = c("AR"),
+    "HRE"          = c("NR3C1","NR3C2","AR","PGR"),
+    "p"            = c("TP53","TP63","TP73")
+  )
+
+  all_genes_expr <- rownames(assay(vsd_corrected))
+
+  # ── STEP 2: Resolve each HOMER name to expressed HGNC symbols ────────────────
+  resolved <- lapply(unique(homer_sig$TF_raw), function(tf) {
+    candidates <- c(homer_to_hgnc[[tf]], toupper(tf), tf)
+    candidates <- unique(candidates[!is.na(candidates)])
+    found <- candidates[candidates %in% all_genes_expr]
+    if (length(found) == 0) return(NULL)
+    data.frame(HOMER_name = tf, HGNC = found, stringsAsFactors = FALSE)
+  })
+
+  resolved_df <- bind_rows(resolved)
+
+  cat(paste0("HOMER motif names with ≥1 HGNC match: ",
+             length(unique(resolved_df$HOMER_name)), " / ",
+             length(unique(homer_sig$TF_raw)), "\n"))
+  cat(paste0("Total unique HGNC symbols resolved: ", length(unique(resolved_df$HGNC)), "\n\n"))
+
+  tf_final <- unique(resolved_df$HGNC)
+
+  # ── STEP 3: Extract and mean-center expression ────────────────────────────────
+  tf_expr_mat      <- assay(vsd_corrected)[tf_final, , drop = FALSE]
+  tf_expr_centered <- tf_expr_mat - rowMeans(tf_expr_mat)
+  tf_expr_centered <- tf_expr_centered[, col_order]
+
+  # Rename rows: "HOMER_name (HGNC)" e.g. "E2F (E2F1)", "RAR:RXR (RARA)"
+  # so the label matches the motif enrichment heatmap but still shows the gene
+  new_rownames <- resolved_df$HOMER_name[match(rownames(tf_expr_centered), resolved_df$HGNC)]
+  rownames(tf_expr_centered) <- paste0(new_rownames, " (", rownames(tf_expr_centered), ")")
+
+  # ── STEP 4: Row annotation ────────────────────────────────────────────────────
+  hgnc_to_clusters <- resolved_df %>%
+    left_join(
+      homer_sig %>% select(TF_raw, Cluster) %>% distinct(),
+      by = c("HOMER_name" = "TF_raw")
+    ) %>%
+    mutate(
+      row_label = paste0(HOMER_name, " (", HGNC, ")")
+    ) %>%
+    group_by(row_label) %>%
+    summarise(
+      Clusters_enriched = paste(sort(unique(Cluster)), collapse = ","),
+      .groups = "drop"
+    ) %>%
+    column_to_rownames("row_label")
+
+  common_tfs       <- intersect(rownames(tf_expr_centered), rownames(hgnc_to_clusters))
+  tf_expr_centered <- tf_expr_centered[common_tfs, , drop = FALSE]
+  ann_row_tf       <- hgnc_to_clusters[common_tfs, , drop = FALSE]
+
+  # Make Clusters_enriched a factor so pheatmap draws it as a discrete legend
+  ann_row_tf$Clusters_enriched <- factor(ann_row_tf$Clusters_enriched)
+
+  # Build a color palette for the unique cluster combinations present
+  cluster_combo_levels <- levels(ann_row_tf$Clusters_enriched)
+  n_combos <- length(cluster_combo_levels)
+  combo_colors <- setNames(
+    colorRampPalette(brewer.pal(min(12, n_combos), "Set3"))(n_combos),
+    cluster_combo_levels
+  )
+
+  ann_colors_tf <- list(
+    condition         = c(REH = "#4DAF4A", EP1 = "#E41A1C", Aro = "#377EB8"),
+    Clusters_enriched = combo_colors
+  )
+
+  # ── STEP 5: Heatmap ───────────────────────────────────────────────────────────
+  heatmap_tf <- pheatmap(
+    tf_expr_centered,
+    scale              = "none",
+    annotation_col     = ann_col,
+    annotation_row     = ann_row_tf,
+    annotation_colors  = ann_colors_tf,
+    cluster_rows       = TRUE,
+    cluster_cols       = FALSE,
+    show_rownames      = TRUE,
+    show_colnames      = TRUE,
+    border_color       = NA,
+    gaps_col           = c(3, 6),
+    color              = colorRampPalette(rev(brewer.pal(9, "RdBu")))(255),
+    fontsize_row       = 9,
+    fontsize_col       = 10,
+    main               = "Expression of ChIP Motif TFs Across Samples\n(log2 mean-centered VST)",
+  )
+  print(heatmap_tf)
+
+  pdf(
+    file.path(homer_chip_dir, "TF_expression_heatmap_chip_motifs.pdf"),
+    width  = 10,
+    height = max(6, nrow(tf_expr_centered) * 0.4 + 3)
+  )
+  print(heatmap_tf)
+  dev.off()
+
+  # ── STEP 6: Summary table ─────────────────────────────────────────────────────
+  tf_summary_expr <- as.data.frame(tf_expr_centered) %>%
+    rownames_to_column("TF") %>%
+    pivot_longer(-TF, names_to = "sample", values_to = "log2_centered") %>%
+    left_join(as.data.frame(colData(dds)) %>% rownames_to_column("sample"), by = "sample") %>%
+    mutate(condition = factor(condition, levels = c("REH", "EP1", "Aro"))) %>%
+    group_by(TF, condition) %>%
+    summarise(
+      mean_centered = round(mean(log2_centered), 3),
+      sd_centered   = round(sd(log2_centered),   3),
+      .groups = "drop"
+    ) %>%
+    pivot_wider(names_from = condition, values_from = c(mean_centered, sd_centered))
+
+  cat("\n### TF Expression Summary (log2 mean-centered VST) ###\n")
+  print(knitr::kable(tf_summary_expr, digits = 3))
+
+  write.table(tf_summary_expr,
+              file.path(homer_chip_dir, "TF_expression_summary_by_condition.tsv"),
+              sep = "\t", row.names = FALSE, quote = FALSE)
+
+  write.table(resolved_df,
+              file.path(homer_chip_dir, "HOMER_to_HGNC_resolved_mapping.tsv"),
+              sep = "\t", row.names = FALSE, quote = FALSE)
+
+  cat("\n=== TF EXPRESSION ANALYSIS COMPLETE ===\n")
+  cat("Outputs saved to:", homer_chip_dir, "\n")
 }
 ```
 
