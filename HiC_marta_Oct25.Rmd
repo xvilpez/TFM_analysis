@@ -848,24 +848,24 @@ heat_colors <- colorRampPalette(rev(brewer.pal(11, "RdYlBu")))(1000)
 heat_colors <- colorRampPalette(c("#4575B4", "#FFFFBF", "#FEE090"))(1000)
 
 # Plot heatmap
-pdf(file.path(plots_dir, "cscore_heatmap.pdf"), width = 10, height = 14)
-pheatmap(cscore_heat_dyn,
-         color                = heat_colors,
-         cluster_rows         = FALSE,
-         cluster_cols         = FALSE,
-         show_rownames        = FALSE,
-         annotation_row       = annot_row,
-         annotation_colors    = annot_colors,
-         annotation_names_row = FALSE,
-         treeheight_row       = 50,
-         scale                = "row",
-         fontsize             = 12,
-         fontsize_col         = 13,
-         angle_col            = 45,
-         legend_breaks        = c(-1, -0.5, 0, 0.5, 1),
-         main                 = "Cscore Heatmap – Dynamic bins only (REH / EP1 / EP1_Aro)",
-         mar                  = c(4, 6, 4, 10))
-#dev.off()
+# pdf(file.path(plots_dir, "cscore_heatmap.pdf"), width = 10, height = 14)
+# pheatmap(cscore_heat_dyn,
+#          color                = heat_colors,
+#          cluster_rows         = FALSE,
+#          cluster_cols         = FALSE,
+#          show_rownames        = FALSE,
+#          annotation_row       = annot_row,
+#          annotation_colors    = annot_colors,
+#          annotation_names_row = FALSE,
+#          treeheight_row       = 50,
+#          scale                = "row",
+#          fontsize             = 12,
+#          fontsize_col         = 13,
+#          angle_col            = 45,
+#          legend_breaks        = c(-1, -0.5, 0, 0.5, 1),
+#          main                 = "Cscore Heatmap – Dynamic bins only (REH / EP1 / EP1_Aro)",
+#          mar                  = c(4, 6, 4, 10))
+# dev.off()
 
 pheatmap(cscore_heat_dyn,
          color                = heat_colors,
@@ -1417,6 +1417,202 @@ cscore_EP1_box <- ggplot(box_df, aes(x = Condition, y = cscore, fill = fill_grou
 
 print(cscore_EP1_box)
 ggsave(file.path(plots_dir, "EP1_overlap_cscore.pdf"), cscore_EP1_box, width = 10, height = 6)
+```
+```{r Corrected Figure 3B}
+# ============================================================================
+# CORRECTED Figure 3B — Spie polar chart
+# Each switching class vs stable bins of SAME initial compartment in REH
+# ============================================================================
+
+# --- Define groups ---------------------------------------------------------
+b_to_a_classes <- c("B_A_A", "B_B_A", "B_A_B")   # initial compartment = B
+a_to_b_classes <- c("A_B_B", "A_A_B", "A_B_A")   # initial compartment = A
+
+switching_dynamic_levels_corrected <- c(b_to_a_classes, a_to_b_classes)
+
+group_map <- tibble(
+  switching    = switching_dynamic_levels_corrected,
+  initial_comp = c(rep("B", length(b_to_a_classes)),
+                   rep("A", length(a_to_b_classes)))
+)
+
+# --- Peak overlap counts for all needed classes ----------------------------
+all_classes_needed <- c("A_A_A", "B_B_B", switching_dynamic_levels_corrected)
+
+overlap_counts2 <- lapply(all_classes_needed, function(sw) {
+
+  bins <- cs_REH_merge %>%
+    filter(switching == sw) %>%
+    select(chrom = chr, start, end) %>%
+    mutate(start = as.integer(start), end = as.integer(end))
+
+  bins_gr   <- makeGRangesFromDataFrame(bins,
+                                        seqnames.field = "chrom",
+                                        start.field    = "start",
+                                        end.field      = "end")
+  n_bins    <- length(bins_gr)
+  n_overlap <- length(unique(queryHits(findOverlaps(bins_gr, peaks_gr))))
+
+  data.frame(switching   = sw,
+             n_bins      = n_bins,
+             n_overlap   = n_overlap,
+             pct_overlap = n_overlap / n_bins * 100)
+
+}) %>% bind_rows()
+
+# Reference rows
+ref_A <- overlap_counts2 %>% filter(switching == "A_A_A")
+ref_B <- overlap_counts2 %>% filter(switching == "B_B_B")
+
+cat(sprintf("Stable A (A_A_A): %d bins, %d with peak (%.1f%%)\n",
+            ref_A$n_bins, ref_A$n_overlap, ref_A$pct_overlap))
+cat(sprintf("Stable B (B_B_B): %d bins, %d with peak (%.1f%%)\n",
+            ref_B$n_bins, ref_B$n_overlap, ref_B$pct_overlap))
+
+# --- Fisher's exact test — each class vs its matched stable reference -------
+fisher_results2 <- lapply(switching_dynamic_levels_corrected, function(sw) {
+
+  sw_row    <- overlap_counts2 %>% filter(switching == sw)
+  init_comp <- group_map %>% filter(switching == sw) %>% pull(initial_comp)
+  ref_row   <- if (init_comp == "B") ref_B else ref_A
+
+  ct <- matrix(
+    c(sw_row$n_overlap,
+      sw_row$n_bins - sw_row$n_overlap,
+      ref_row$n_overlap,
+      ref_row$n_bins - ref_row$n_overlap),
+    nrow = 2, byrow = TRUE,
+    dimnames = list(c("Switching", "Stable_ref"),
+                    c("Peak", "No_Peak"))
+  )
+
+  ft <- fisher.test(ct)
+
+  data.frame(
+    switching    = sw,
+    initial_comp = init_comp,
+    n_bins       = sw_row$n_bins,
+    n_overlap    = sw_row$n_overlap,
+    pct_overlap  = sw_row$pct_overlap,
+    ref_pct      = ref_row$pct_overlap,   # <-- per-class reference, not pooled
+    OR           = unname(ft$estimate),
+    CI_low       = ft$conf.int[1],
+    CI_high      = ft$conf.int[2],
+    p_value      = ft$p.value
+  )
+}) %>% bind_rows()
+
+fisher_results2 <- fisher_results2 %>%
+  mutate(
+    p_adj = p.adjust(p_value, method = "BH"),
+
+    significance = case_when(
+      p_adj < 0.001 ~ "***",
+      p_adj < 0.01  ~ "**",
+      p_adj < 0.05  ~ "*",
+      TRUE          ~ "ns"
+    ),
+
+    # fold enrichment over the MATCHED stable reference (not pooled)
+    fold_enrichment = pct_overlap / ref_pct,
+
+    switching = factor(switching, levels = switching_dynamic_levels_corrected)
+  )
+
+write.csv(fisher_results2,
+          file.path(files_dir, "EP1_fisher_results_corrected.csv"),
+          row.names = FALSE)
+
+# --- Spie plot data --------------------------------------------------------
+overlap_counts_plot2 <- overlap_counts2 %>%
+  filter(switching %in% switching_dynamic_levels_corrected) %>%
+  left_join(fisher_results2 %>%
+              select(switching, significance, fold_enrichment, initial_comp),
+            by = "switching") %>%
+  mutate(switching = factor(switching,
+                            levels = switching_dynamic_levels_corrected)) %>%
+  arrange(switching) %>%
+  mutate(
+    bin_prop  = n_bins / sum(n_bins),
+    pos_x     = cumsum(bin_prop) - bin_prop,
+    pos_mid   = pos_x + bin_prop / 2
+  )
+
+# --- Spie polar plot -------------------------------------------------------
+overlap_polar2 <- ggplot(overlap_counts_plot2, aes(x = pos_mid)) +
+
+  geom_bar(
+    aes(y = fold_enrichment, fill = switching, width = bin_prop),
+    color     = "black",
+    linewidth = 0.35,
+    stat      = "identity"
+  ) +
+
+  # Reference line at 1 (= same as matched stable compartment)
+  geom_hline(
+    yintercept = 1,
+    linetype   = "dashed",
+    color      = "gray40",
+    linewidth  = 0.5
+  ) +
+
+  geom_text(
+    aes(
+      x     = pos_mid,
+      y     = fold_enrichment / 2,
+      label = sprintf("%.1f%%", pct_overlap)
+    ),
+    size     = 3.2,
+    fontface = "bold",
+    color    = "white"
+  ) +
+
+  geom_text(
+    data = overlap_counts_plot2 %>% filter(significance != "ns"),
+    aes(
+      x     = pos_mid,
+      y     = fold_enrichment + max(overlap_counts_plot2$fold_enrichment) * 0.10,
+      label = significance
+    ),
+    size     = 4,
+    fontface = "bold",
+    color    = "gray20"
+  ) +
+
+  coord_polar(theta = "x") +
+
+  scale_x_continuous(breaks = NULL, labels = NULL) +
+
+  scale_y_continuous(
+    limits = c(0, max(overlap_counts_plot2$fold_enrichment) * 1.3),
+    breaks = c(0.5, 1, 1.5, 2, 2.5)
+  ) +
+
+  scale_fill_manual(
+    values = switching_colors[switching_dynamic_levels_corrected],
+    name   = "Switching\n(REH_EP1_Aro)"
+  ) +
+
+  theme_bw() +
+  theme(
+    axis.text.x  = element_text(size = 7, face = "bold"),
+    axis.text.y  = element_text(size = 8),
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(size = 11),
+    plot.title   = element_text(hjust = 0.5, face = "bold", size = 13),
+    panel.grid   = element_line(color = "gray88", linetype = "dashed"),
+    legend.title = element_text(face = "bold")
+  ) +
+
+  ylab("Fold enrichment vs stable bins\n(same initial compartment in REH)") +
+  labs(title = "E2A-PBX1 peak enrichment per compartment switching class\nvs matched stable reference (REH)")
+
+print(overlap_polar2)
+ggsave(
+  file.path(plots_dir, "EP1_overlap_spie_polar_corrected.pdf"),
+  overlap_polar2,
+  width = 10, height = 6
+)
 ```
 
 ```{r ChIP-Seq intersection Top25}
