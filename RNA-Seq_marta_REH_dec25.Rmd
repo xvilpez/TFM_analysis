@@ -2212,13 +2212,13 @@ if (!homer_chip_ready) {
 
   # ── STEP 3: Extract and mean-center expression ────────────────────────────────
   tf_expr_mat      <- assay(vsd_corrected)[tf_final, , drop = FALSE]
-  tf_expr_centered <- tf_expr_mat - rowMeans(tf_expr_mat)
-  tf_expr_centered <- tf_expr_centered[, col_order]
+  
+  # Z-score per gene (row), matching the clustering heatmap
+  tf_expr_scaled   <- t(scale(t(tf_expr_mat)))
+  tf_expr_scaled   <- tf_expr_scaled[, col_order]
 
-  # Rename rows: "HOMER_name (HGNC)" e.g. "E2F (E2F1)", "RAR:RXR (RARA)"
-  # so the label matches the motif enrichment heatmap but still shows the gene
-  new_rownames <- resolved_df$HOMER_name[match(rownames(tf_expr_centered), resolved_df$HGNC)]
-  rownames(tf_expr_centered) <- paste0(new_rownames, " (", rownames(tf_expr_centered), ")")
+  new_rownames <- resolved_df$HOMER_name[match(rownames(tf_expr_scaled), resolved_df$HGNC)]
+  rownames(tf_expr_scaled) <- paste0(new_rownames, " (", rownames(tf_expr_scaled), ")")
 
   # ── STEP 4: Row annotation ────────────────────────────────────────────────────
   hgnc_to_clusters <- resolved_df %>%
@@ -2226,9 +2226,7 @@ if (!homer_chip_ready) {
       homer_sig %>% select(TF_raw, Cluster) %>% distinct(),
       by = c("HOMER_name" = "TF_raw")
     ) %>%
-    mutate(
-      row_label = paste0(HOMER_name, " (", HGNC, ")")
-    ) %>%
+    mutate(row_label = paste0(HOMER_name, " (", HGNC, ")")) %>%
     group_by(row_label) %>%
     summarise(
       Clusters_enriched = paste(sort(unique(Cluster)), collapse = ","),
@@ -2236,14 +2234,21 @@ if (!homer_chip_ready) {
     ) %>%
     column_to_rownames("row_label")
 
-  common_tfs       <- intersect(rownames(tf_expr_centered), rownames(hgnc_to_clusters))
-  tf_expr_centered <- tf_expr_centered[common_tfs, , drop = FALSE]
+  common_tfs       <- intersect(rownames(tf_expr_scaled), rownames(hgnc_to_clusters))
+  tf_expr_scaled <- tf_expr_scaled[common_tfs, , drop = FALSE]
   ann_row_tf       <- hgnc_to_clusters[common_tfs, , drop = FALSE]
 
-  # Make Clusters_enriched a factor so pheatmap draws it as a discrete legend
   ann_row_tf$Clusters_enriched <- factor(ann_row_tf$Clusters_enriched)
 
-  # Build a color palette for the unique cluster combinations present
+  # ── Sort rows by Clusters_enriched ───────────────────────────────────────────
+  row_order        <- order(ann_row_tf$Clusters_enriched)
+  tf_expr_scaled <- tf_expr_scaled[row_order, , drop = FALSE]
+  ann_row_tf       <- ann_row_tf[row_order, , drop = FALSE]
+
+  # Compute gaps_row at boundaries between cluster groups
+  cluster_run_lengths <- rle(as.character(ann_row_tf$Clusters_enriched))$lengths
+  gaps_row            <- cumsum(head(cluster_run_lengths, -1))
+
   cluster_combo_levels <- levels(ann_row_tf$Clusters_enriched)
   n_combos <- length(cluster_combo_levels)
   combo_colors <- setNames(
@@ -2258,34 +2263,35 @@ if (!homer_chip_ready) {
 
   # ── STEP 5: Heatmap ───────────────────────────────────────────────────────────
   heatmap_tf <- pheatmap(
-    tf_expr_centered,
+    tf_expr_scaled,
     scale              = "none",
     annotation_col     = ann_col,
     annotation_row     = ann_row_tf,
     annotation_colors  = ann_colors_tf,
-    cluster_rows       = TRUE,
+    cluster_rows       = FALSE,          # <-- disabled; order is manual
     cluster_cols       = FALSE,
     show_rownames      = TRUE,
     show_colnames      = TRUE,
     border_color       = NA,
     gaps_col           = c(3, 6),
+    gaps_row           = gaps_row,       # <-- visual separators between groups
     color              = colorRampPalette(rev(brewer.pal(9, "RdBu")))(255),
     fontsize_row       = 9,
     fontsize_col       = 10,
-    main               = "Expression of ChIP Motif TFs Across Samples\n(log2 mean-centered VST)",
+    main               = "Expression of ChIP Motif TFs Across Samples\n(z-scored VST)",
   )
   print(heatmap_tf)
 
   pdf(
     file.path(homer_chip_dir, "TF_expression_heatmap_chip_motifs.pdf"),
     width  = 10,
-    height = max(6, nrow(tf_expr_centered) * 0.4 + 3)
+    height = max(6, nrow(tf_expr_scaled) * 0.4 + 3)
   )
   print(heatmap_tf)
   dev.off()
 
   # ── STEP 6: Summary table ─────────────────────────────────────────────────────
-  tf_summary_expr <- as.data.frame(tf_expr_centered) %>%
+  tf_summary_expr <- as.data.frame(tf_expr_scaled) %>%
     rownames_to_column("TF") %>%
     pivot_longer(-TF, names_to = "sample", values_to = "log2_centered") %>%
     left_join(as.data.frame(colData(dds)) %>% rownames_to_column("sample"), by = "sample") %>%
