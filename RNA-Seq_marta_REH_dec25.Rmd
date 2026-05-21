@@ -31,6 +31,7 @@ library(NbClust)
 library(ashr)
 library(DEGreport)
 library(enrichR)
+library(ggsignif)
 
 ```
 
@@ -441,6 +442,14 @@ centered_long <- as.data.frame(log2_centered) %>%
   pivot_longer(-gene, names_to = "sample", values_to = "log2_centered") %>%
   left_join(as.data.frame(colData(dds)) %>% rownames_to_column("sample"), by = "sample")
 
+sig_label <- function(p) {
+  case_when(
+    is.na(p) | p >= 0.05 ~ NA_character_,
+    p < 0.001 ~ paste0("p=", formatC(p, format = "e", digits = 1)),
+    TRUE ~ paste0("p=", round(p, 3))
+  )
+}
+
 # --- 2. Boxplot per sample (QC: should be symmetric around 0) ---
 p_box_sample <- ggplot(centered_long, aes(x = sample, y = log2_centered, fill = condition)) +
   geom_boxplot(outlier.size = 0.3, outlier.alpha = 0.4) +
@@ -458,11 +467,52 @@ condition_summary <- centered_long %>%
   group_by(gene, condition) %>%
   summarise(mean_centered = mean(log2_centered), .groups = "drop")
 
+# --- 3b. Wilcoxon tests between conditions (needed for plots below) ---
+conditions_to_test <- list(c("EP1", "REH"), c("Aro", "REH"), c("EP1", "Aro"))
+
+wilcox_global <- lapply(conditions_to_test, function(pair) {
+  x <- condition_summary$mean_centered[condition_summary$condition == pair[1]]
+  y <- condition_summary$mean_centered[condition_summary$condition == pair[2]]
+  p <- wilcox.test(x, y)$p.value
+  data.frame(group1 = pair[1], group2 = pair[2], p.value = p)
+}) %>% bind_rows() %>%
+  mutate(padj = p.adjust(p.value, method = "BH"))
+
+# Build bracket data for significant pairs
+bracket_global <- wilcox_global %>%
+  mutate(sig = sig_label(padj)) %>%
+  filter(!is.na(sig))
+
+y_max_global <- max(condition_summary$mean_centered, na.rm = TRUE)
+bracket_global <- bracket_global %>%
+  mutate(y_pos = y_max_global * (1.08 + 0.08 * (row_number() - 1)))
+
 # --- 4. Boxplot per condition ---
+
+# Build bracket data for significant pairs
+bracket_global <- wilcox_global %>%
+  mutate(sig = sig_label(padj)) %>%
+  filter(!is.na(sig))
+
+# y positions for brackets (stacked to avoid overlap)
+y_max_global <- max(condition_summary$mean_centered, na.rm = TRUE)
+bracket_global <- bracket_global %>%
+  mutate(y_pos = y_max_global * (1.08 + 0.08 * (row_number() - 1)))
+
 p_box_cond <- ggplot(condition_summary, aes(x = condition, y = mean_centered, fill = condition)) +
   geom_boxplot(outlier.size = 0.3, outlier.alpha = 0.4) +
   geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
   geom_jitter(width = 0.1, alpha = 0.01, size = 0.2) +
+  {if (nrow(bracket_global) > 0)
+    ggsignif::geom_signif(
+      data        = bracket_global,
+      aes(xmin = group1, xmax = group2, annotations = sig, y_position = y_pos),
+      manual      = TRUE,
+      tip_length  = 0.01,
+      textsize    = 3,
+      inherit.aes = FALSE
+    )
+  } +
   theme_bw() +
   labs(title = "Global Expression per Condition – log2 Mean-Centered",
        x = "Condition", y = "Mean log2 centered expression") +
@@ -475,6 +525,16 @@ p_violin <- ggplot(condition_summary, aes(x = condition, y = mean_centered, fill
   geom_violin(trim = FALSE, alpha = 0.7) +
   geom_boxplot(width = 0.1, fill = "white", outlier.size = 0.3) +
   geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  {if (nrow(bracket_global) > 0)
+    ggsignif::geom_signif(
+      data        = bracket_global,
+      aes(xmin = group1, xmax = group2, annotations = sig, y_position = y_pos),
+      manual      = TRUE,
+      tip_length  = 0.01,
+      textsize    = 3,
+      inherit.aes = FALSE
+    )
+  } +
   theme_bw() +
   labs(title = "Global Expression per Condition – Violin (log2 Mean-Centered)",
        x = "Condition", y = "Mean log2 centered expression") +
@@ -494,7 +554,13 @@ expr_stats <- condition_summary %>%
     .groups = "drop"
   )
 cat("\n### Global Expression Summary (log2 Mean-Centered) ###\n")
+
 print(expr_stats)
+
+cat("\n### Wilcoxon Tests (Global Expression) ###\n")
+
+print(wilcox_global)
+
 ```
 
 ## Differential Expression Analysis with LFC Shrinkage
@@ -2741,43 +2807,41 @@ if (!homer_top25_ready) {
 ```{r Loop Anchor Gene Analysis, fig.width=12, fig.height=8}
 cat("\n=== LOOP ANCHOR GENE ANALYSIS ===\n\n")
 
-# loop_dir <- "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/loops/intersected_loops/gene_intersection"
-
-loop_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/loops/intersected_loops/gene_intersection"
+loop_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/loops/intersected_loops"
 
 loop_files <- list(
   EP1_specific = list(
-    file = "EP1_specific_only_05_10kb_exp30kb_anchors_GENES.bed",
+    file = "EP1_specific_only_05_10kb_exp30kb_anchors.bed",
     type = "specific"
   ),
   Aro_specific = list(
-    file = "ARO_specific_only_05_10kb_exp30kb_anchors_GENES.bed",
+    file = "ARO_specific_only_05_10kb_exp30kb_anchors.bed",
     type = "specific"
   ),
   REH_specific = list(
-    file = "REH_specific_only_05_10kb_exp30kb_anchors_GENES.bed",
+    file = "REH_specific_only_05_10kb_exp30kb_anchors.bed",
     type = "specific"
   ),
   shared_EP1_Aro = list(
-    file = "shared_EP1_ARO_only_05_10kb_exp30kb_anchors_GENES.bed",
+    file = "shared_EP1_ARO_only_05_10kb_exp30kb_anchors.bed",
     type = "shared"
   ),
   shared_EP1_REH = list(
-    file = "shared_EP1_REH_only_05_10kb_exp30kb_anchors_GENES.bed",
+    file = "shared_EP1_REH_only_05_10kb_exp30kb_anchors.bed",
     type = "shared"
   ),
   shared_Aro_REH = list(
-    file = "shared_ARO_REH_only_05_10kb_exp30kb_anchors_GENES.bed",
+    file = "shared_ARO_REH_only_05_10kb_exp30kb_anchors.bed",
     type = "shared"
   ),
   shared_all3 = list(
-    file = "shared_loops_all3_05_10kb_exp30kb_anchors_GENES.bed",
+    file = "shared_loops_all3_05_10kb_exp30kb_anchors.bed",
     type = "shared"
   )
 )
 
 # ----------------------------------------------------------------------------
-# 1. Load gene lists per loop category
+# 1. Load BED files and intersect anchor coordinates directly with tss_gr
 # ----------------------------------------------------------------------------
 loop_data <- list()
 
@@ -2785,8 +2849,15 @@ for (loop_name in names(loop_files)) {
   file_path <- file.path(loop_dir, loop_files[[loop_name]]$file)
   if (file.exists(file_path)) {
     bed_data <- read.table(file_path, header = FALSE, stringsAsFactors = FALSE)
-    genes    <- unique(bed_data$V5)
-    cat(paste0(loop_name, ": ", length(genes), " unique genes\n"))
+    colnames(bed_data)[1:3] <- c("chr", "start", "end")
+    
+    anchors_gr <- makeGRangesFromDataFrame(bed_data, seqnames.field = "chr")
+    hits_tss   <- findOverlaps(anchors_gr, tss_gr)
+    genes      <- unique(tss_gr$symbol[subjectHits(hits_tss)])
+    genes      <- genes[!is.na(genes)]
+    
+    cat(paste0(loop_name, ": ", length(genes), " unique genes (from ",
+               length(anchors_gr), " anchors)\n"))
     loop_data[[loop_name]] <- list(
       genes = genes,
       type  = loop_files[[loop_name]]$type
@@ -2889,15 +2960,6 @@ write.table(summary_stats,
 # 6. Wilcoxon test per loop category: EP1 vs REH and Aro vs REH
 #    On per-gene means per condition to avoid pseudo-replication
 # ----------------------------------------------------------------------------
-sig_label <- function(p) {
-  case_when(
-    is.na(p)  ~ "ns",
-    p < 0.001 ~ "***",
-    p < 0.01  ~ "**",
-    p < 0.05  ~ "*",
-    TRUE      ~ "ns"
-  )
-}
 
 gene_means <- loop_counts %>%
   group_by(loop_category, loop_type, gene_name, condition) %>%
@@ -2940,7 +3002,7 @@ y_positions <- loop_counts %>%
 
 bracket_df <- wilcox_results %>%
   pivot_longer(cols = c(sig_EP1, sig_Aro), names_to = "which", values_to = "sig") %>%
-  filter(sig != "ns") %>%
+  filter(!is.na(sig)) %>%
   mutate(
     condition = factor(recode(which, "sig_EP1" = "EP1", "sig_Aro" = "Aro"),
                        levels = c("REH", "EP1", "Aro"))
@@ -2980,7 +3042,7 @@ p1 <- ggplot(
     geom_text(
       data        = bracket_df,
       aes(x       = condition, y = y_pos, label = sig),
-      size        = 5,
+      size        = 3,
       fontface    = "bold",
       color       = "gray20",
       inherit.aes = FALSE
@@ -3037,7 +3099,7 @@ y_type <- gene_means_type %>%
 
 bracket_type <- wilcox_type %>%
   pivot_longer(c(sig_EP1, sig_Aro), names_to = "which", values_to = "sig") %>%
-  filter(sig != "ns") %>%
+  filter(!is.na(sig)) %>%
   mutate(
     condition = factor(recode(which, "sig_EP1" = "EP1", "sig_Aro" = "Aro"),
                        levels = c("REH", "EP1", "Aro"))
@@ -3056,7 +3118,7 @@ p2 <- ggplot(
     geom_text(
       data        = bracket_type,
       aes(x       = condition, y = y_pos, label = sig),
-      size        = 5,
+      size        = 3,
       fontface    = "bold",
       color       = "gray20",
       inherit.aes = FALSE
@@ -3091,7 +3153,9 @@ library(GenomicRanges)
 all_loop_genes <- unique(unlist(lapply(loop_data, function(x) x$genes)))
 cat(paste0("Total unique genes at any loop anchor: ", length(all_loop_genes), "\n"))
 
-# ── 2. Read random regions from BED file ─────────────────────────────────────
+# ----------------------------------------------------------------------------
+# 2. Read random regions from BED file
+# ----------------------------------------------------------------------------
 random_bed_path <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/loops/intersected_loops/chip_coverage/random_regions_labeled_sorted.bed"
 stopifnot(file.exists(random_bed_path))
 
@@ -3105,6 +3169,7 @@ random_gr <- GRanges(
 )
 cat(paste0("Random GRanges object: ", length(random_gr), " intervals\n\n"))
 
+
 # ── 3. Count total unique anchor intervals across all loop files ──────────────
 n_loops_to_sample <- 0
 for (loop_name in names(loop_files)) {
@@ -3117,8 +3182,9 @@ for (loop_name in names(loop_files)) {
 cat(paste0("Total unique loop anchor intervals: ", n_loops_to_sample, "\n"))
 
 # ── 4. Map genes to random regions (exclude any already in loop set) ──────────
-hits_random  <- findOverlaps(random_gr, genes_gr)
-random_genes <- unique(genes_gr$gene_name[subjectHits(hits_random)])
+hits_random  <- findOverlaps(random_gr, tss_gr)
+random_genes <- unique(tss_gr$symbol[subjectHits(hits_random)])
+random_genes <- random_genes[!is.na(random_genes)]
 random_genes <- random_genes[!random_genes %in% all_loop_genes]
 cat(paste0("Unique genes in random regions (not in loops): ", length(random_genes), "\n\n"))
 
@@ -3175,7 +3241,7 @@ y_positions_comp <- compare_long %>%
   summarise(y_max = max(log2_centered, na.rm = TRUE), .groups = "drop")
 
 bracket_comp <- wilcox_comp %>%
-  filter(sig != "ns") %>%
+  filter(!is.na(sig)) %>%
   left_join(y_positions_comp, by = "condition") %>%
   mutate(
     y_pos     = y_max * 1.08,
@@ -3330,7 +3396,7 @@ y_pos_cat <- combined_long %>%
 bracket_cat <- wilcox_cat %>%
   pivot_longer(cols = c(sig_EP1, sig_Aro),
                names_to = "which", values_to = "sig") %>%
-  filter(sig != "ns") %>%
+  filter(!is.na(sig)) %>%
   mutate(condition = factor(recode(which, "sig_EP1" = "EP1", "sig_Aro" = "Aro"),
                             levels = c("REH", "EP1", "Aro"))) %>%
   left_join(y_pos_cat, by = c("facet_group", "condition")) %>%
@@ -3353,7 +3419,7 @@ p_cat <- ggplot(
     geom_text(
       data        = bracket_cat,
       aes(x = condition, y = y_pos, label = sig),
-      size        = 5,
+      size        = 3,
       fontface    = "bold",
       color       = "gray20",
       inherit.aes = FALSE
@@ -3387,8 +3453,8 @@ cat("\n=== Loop vs Random analysis complete — plots saved to Loops/ ===\n")
 ```
 
 ```{r Compartment intersection}
-# data <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore/Comp_Analysis/files/cs_REH_merge.tab"
-data <- "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore/Comp_Analysis/files/cs_REH_merge.tab"
+data <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore/Comp_Analysis/files/cs_REH_merge.tab"
+# data <- "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore/Comp_Analysis/files/cs_REH_merge.tab"
 
 cs_REH_merge <- read.table(data,
                             sep       = "\t",
@@ -3484,16 +3550,6 @@ gene_means <- counts_comp %>%
   group_by(switching, gene_name, condition) %>%
   summarise(mean_log2 = mean(log2_centered), .groups = "drop")
 
-sig_label <- function(p) {
-  case_when(
-    is.na(p)  ~ "ns",
-    p < 0.001 ~ "***",
-    p < 0.01  ~ "**",
-    p < 0.05  ~ "*",
-    TRUE      ~ "ns"
-  )
-}
-
 wilcox_results <- gene_means %>%
   group_by(switching) %>%
   summarise(
@@ -3531,7 +3587,7 @@ y_positions <- counts_comp %>%
 
 bracket_df <- wilcox_results %>%
   pivot_longer(cols = c(sig_EP1, sig_Aro), names_to = "which", values_to = "sig") %>%
-  filter(sig != "ns") %>%
+  filter(!is.na(sig)) %>%
   mutate(
     condition = factor(recode(which, "sig_EP1" = "EP1", "sig_Aro" = "Aro"),
                        levels = c("REH", "EP1", "Aro"))
@@ -3579,7 +3635,7 @@ counts_boxplot <- ggplot(
     geom_text(
       data        = bracket_df,
       aes(x       = condition, y = y_pos, label = sig),
-      size        = 5,
+      size        = 3,
       fontface    = "bold",
       color       = "gray20",
       inherit.aes = FALSE
@@ -3860,15 +3916,6 @@ write.table(summary_stats_tad,
 # ----------------------------------------------------------------------------
 # 7. Wilcoxon: each TAD category vs random, per condition (BH-adjusted)
 # ----------------------------------------------------------------------------
-sig_label_tad <- function(p) {
-  case_when(
-    is.na(p)  ~ "ns",
-    p < 0.001 ~ "***",
-    p < 0.01  ~ "**",
-    p < 0.05  ~ "*",
-    TRUE      ~ "ns"
-  )
-}
 
 gene_means_tad <- counts_tad %>%
   group_by(tad_category, gene_name, condition) %>%
@@ -3895,7 +3942,7 @@ wilcox_tad <- gene_means_tad %>%
   group_by(condition) %>%
   mutate(
     padj = p.adjust(p_value, method = "BH"),
-    sig  = sig_label_tad(padj)
+    sig  = sig_label(padj)
   ) %>%
   ungroup()
 
@@ -3913,7 +3960,7 @@ y_positions_tad <- counts_tad %>%
   summarise(y_max = max(log2_centered, na.rm = TRUE), .groups = "drop")
 
 bracket_tad <- wilcox_tad %>%
-  filter(sig != "ns") %>%
+  filter(!is.na(sig)) %>%
   mutate(tad_category = factor(tad_category, levels = tad_category_levels)) %>%
   left_join(y_positions_tad, by = c("condition", "tad_category")) %>%
   mutate(y_pos = y_max * 1.08)
@@ -3958,7 +4005,7 @@ p_tad <- ggplot(
     geom_text(
       data        = bracket_tad,
       aes(x = tad_category, y = y_pos, label = sig),
-      size        = 4,
+      size        = 3,
       fontface    = "bold",
       color       = "gray20",
       inherit.aes = FALSE

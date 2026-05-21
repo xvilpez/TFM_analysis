@@ -21,8 +21,8 @@ knitr::opts_chunk$set(
   message = FALSE,
   fig.align = "center"
 )
- # knitr::opts_knit$set(root.dir = "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore")
-knitr::opts_knit$set(root.dir = "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore")
+ knitr::opts_knit$set(root.dir = "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore")
+# knitr::opts_knit$set(root.dir = "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore")
 
 ```
 
@@ -70,6 +70,15 @@ plots_dir  <- file.path(output_dir, "plots")
 for (d in c(files_dir, plots_dir)) {
   if (!dir.exists(d)) dir.create(d, recursive = TRUE)
 }
+
+sig_label <- function(p) {
+  case_when(
+    is.na(p) | p >= 0.05 ~ NA_character_,
+    p < 0.001 ~ paste0("p=", formatC(p, format = "e", digits = 1)),
+    TRUE ~ paste0("p=", round(p, 3))
+  )
+}
+
 ```
 
 ---
@@ -80,8 +89,8 @@ All bedgraph files are loaded from the cscore iteration trial directory.
 Each file contains four columns: `chr`, `start`, `end`, and the cscore `score`.
 
 ```{r load-data}
- # data_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore"
-data_dir <-"/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore"
+ data_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore"
+# data_dir <-"/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore"
 
 read_cscore <- function(filename, score_colname) {
   read.table(file.path(data_dir, filename),
@@ -902,7 +911,7 @@ library(ggplot2)
 # ----------------------------------------------------------------------------
 # 1. Load gene annotation BED (gencode v28) (either from R:/R_STIK/ or /ijc/LABS/STIK/RAW/)
 # ----------------------------------------------------------------------------
-genes_bed <- read.table("/ijc/LABS/STIK/RAW/xavi_scripts/genes_gencode.v28.bed",
+genes_bed <- read.table("R:/R_STIK/xavi_scripts/genes_gencode.v28.bed",
                         sep       = "\t",
                         header    = FALSE,
                         col.names = c("chrom", "start", "end", "strand",
@@ -1112,12 +1121,12 @@ library(tidyr)
 # ----------------------------------------------------------------------------
 # Load ChIP-seq peaks BED
 # ----------------------------------------------------------------------------
-peaks_bed <- read.table("/ijc/LABS/STIK/RAW/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed",
+peaks_bed <- read.table("R:/R_STIK/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed",
                         sep       = "\t",
                         header    = FALSE,
                         col.names = c("chrom", "start", "end")
                         [1:ncol(read.table(
-                        "/ijc/LABS/STIK/RAW/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed",
+                        "R:/R_STIK/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed",
                         sep = "\t", nrows = 1))]) %>%
   select(chrom = 1, start = 2, end = 3) %>%
   mutate(start = as.integer(start),
@@ -1221,12 +1230,7 @@ fisher_results <- fisher_results %>%
   mutate(
     p_adj = p.adjust(p_value, method = "BH"),
 
-    significance = case_when(
-      p_adj < 0.001 ~ "***",
-      p_adj < 0.01  ~ "**",
-      p_adj < 0.05  ~ "*",
-      TRUE          ~ "ns"
-    ),
+    significance = sig_label(p_adj),
 
     fold_enrichment = pct_overlap / background_pct,
 
@@ -1288,13 +1292,13 @@ overlap_polar <- ggplot(overlap_counts_plot, aes(x = pos_mid)) +
   ) +
 
   geom_text(
-    data = overlap_counts_plot %>% filter(significance != "ns"),
+    data = overlap_counts_plot %>% filter(!is.na(significance)),
     aes(
       x     = pos_mid,
       y     = fold_enrichment + max(overlap_counts_plot$fold_enrichment) * 0.10,
       label = significance
     ),
-    size     = 4,
+    size     = 3,
     fontface = "bold",
     color    = "gray20"
   ) +
@@ -1344,8 +1348,9 @@ forest_plot <- ggplot(fisher_results,
   geom_errorbarh(aes(xmin = CI_low, xmax = CI_high),
                  height = 0.25, linewidth = 0.7) +
   geom_point(size = 3.5) +
-  geom_text(aes(label = significance, x = CI_high),
-            hjust = -0.4, size = 5, color = "black") +
+  geom_text(data = fisher_results %>% filter(!is.na(significance)),
+            aes(label = significance, x = CI_high),
+            hjust = -0.4, size = 3, color = "black") +
   scale_color_manual(values = switching_colors[all_switching_levels],
                    name   = "Switching class") +
   scale_x_log10() +
@@ -1506,12 +1511,7 @@ fisher_results2 <- fisher_results2 %>%
   mutate(
     p_adj = p.adjust(p_value, method = "BH"),
 
-    significance = case_when(
-      p_adj < 0.001 ~ "***",
-      p_adj < 0.01  ~ "**",
-      p_adj < 0.05  ~ "*",
-      TRUE          ~ "ns"
-    ),
+    significance = sig_label(p_adj),
 
     # fold enrichment over the MATCHED stable reference (not pooled)
     fold_enrichment = pct_overlap / ref_pct,
@@ -1568,13 +1568,13 @@ overlap_polar2 <- ggplot(overlap_counts_plot2, aes(x = pos_mid)) +
   ) +
 
   geom_text(
-    data = overlap_counts_plot2 %>% filter(significance != "ns"),
+    data = overlap_counts_plot2 %>% filter(!is.na(significance)),
     aes(
       x     = pos_mid,
       y     = fold_enrichment + max(overlap_counts_plot2$fold_enrichment) * 0.10,
       label = significance
     ),
-    size     = 4,
+    size     = 3,
     fontface = "bold",
     color    = "gray20"
   ) +
@@ -1628,7 +1628,7 @@ library(tidyr)
 # Load Top25 ChIP-seq peaks BED
 # ----------------------------------------------------------------------------
 peaks_top25_bed <- read.table(
-  "/ijc/LABS/STIK/RAW/chip_seq/Xavi_TFM/top25_697HF_E2APBX1-HF_peaks.bed",
+  "R:/R_STIK/chip_seq/Xavi_TFM/top25_697HF_E2APBX1-HF_peaks.bed",
   sep    = "\t",
   header = FALSE
 ) %>%
@@ -1717,12 +1717,7 @@ fisher_top25_results <- lapply(all_switching_levels, function(sw) {
 fisher_top25_results <- fisher_top25_results %>%
   mutate(
     p_adj           = p.adjust(p_value, method = "BH"),
-    significance    = case_when(
-      p_adj < 0.001 ~ "***",
-      p_adj < 0.01  ~ "**",
-      p_adj < 0.05  ~ "*",
-      TRUE          ~ "ns"
-    ),
+    significance = sig_label(p_adj),
     fold_enrichment = pct_overlap / background_top25_pct,
     switching       = factor(switching, levels = all_switching_levels)
   )
@@ -1789,8 +1784,9 @@ forest_top25_plot <- ggplot(fisher_top25_results,
   geom_errorbarh(aes(xmin = CI_low, xmax = CI_high),
                  height = 0.25, linewidth = 0.7) +
   geom_point(size = 3.5) +
-  geom_text(aes(label = significance, x = CI_high),
-            hjust = -0.4, size = 5, color = "black") +
+  geom_text(data = fisher_top25_results %>% filter(!is.na(significance)),
+            aes(label = significance, x = CI_high),
+            hjust = -0.4, size = 3, color = "black") +
   scale_color_manual(values = switching_colors,
                      name   = "Switching class") +
   scale_x_log10() +
@@ -1988,7 +1984,7 @@ library(tidyr)
 # ----------------------------------------------------------------------------
 # Output directories – separate from compartment analysis
 # ----------------------------------------------------------------------------
-loops_base_dir  <- "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/loops/intersected_loops/fisher"
+loops_base_dir  <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/loops/intersected_loops/fisher"
 loops_files_dir <- file.path(loops_base_dir, "files")
 loops_plots_dir <- file.path(loops_base_dir, "plots")
 
@@ -2096,12 +2092,7 @@ compute_overlap_stats <- function(anchors_gr_list, peaks_gr) {
   fisher_res <- fisher_res %>%
     mutate(
       p_adj           = p.adjust(p_value, method = "BH"),
-      significance    = case_when(
-        p_adj < 0.001 ~ "***",
-        p_adj < 0.01  ~ "**",
-        p_adj < 0.05  ~ "*",
-        TRUE          ~ "ns"
-      ),
+      significance = sig_label(p_adj),
       fold_enrichment = pct_overlap / bg_pct,
       anchor_class    = factor(anchor_class, levels = anchor_levels)
     )
@@ -2148,8 +2139,9 @@ plot_anchor_forest <- function(fisher_res, title_str) {
     geom_errorbarh(aes(xmin = CI_low, xmax = ifelse(is.infinite(CI_high), OR * 10, CI_high)),
                    height = 0.25, linewidth = 0.7) +
     geom_point(size = 3.5) +
-    geom_text(aes(label = significance),
-              hjust = -0.8, vjust = 0.4, size = 5, color = "black") +
+    geom_text(data = fisher_res %>% filter(!is.na(significance)),
+              aes(label = significance),
+              hjust = -0.8, vjust = 0.4, size = 3, color = "black") +
     scale_color_manual(values = anchor_colors, name = "Anchor class") +
     scale_x_log10() +
     theme_bw() +
@@ -2181,51 +2173,6 @@ write.table(res_full$fisher,
             file.path(loops_files_dir, "loop_anchor_EP1_chip_fisher.tsv"),
             sep = "\t", row.names = FALSE, quote = FALSE)
 
-p_polar_full <- plot_anchor_polar(
-  res_full$counts,
-  "E2A-PBX1 peak enrichment per loop anchor class\n(pooled anchor background)"
-)
-print(p_polar_full)
-ggsave(file.path(loops_plots_dir, "loop_anchor_EP1_polar.pdf"),
-       p_polar_full, width = 10, height = 6)
-
-p_forest_full <- plot_anchor_forest(
-  res_full$fisher,
-  "Fisher's exact test: E2A-PBX1 peak enrichment\nper loop anchor class vs other anchor classes"
-)
-print(p_forest_full)
-ggsave(file.path(loops_plots_dir, "loop_anchor_EP1_forest.pdf"),
-       p_forest_full, width = 8, height = 5)
-
-# ============================================================================
-# B. Top25 697HF E2A-PBX1 peaks
-# ============================================================================
-cat("\n--- Top25 E2A-PBX1 peaks ---\n")
-res_top25 <- compute_overlap_stats(anchors_gr_list, peaks_top25_gr)
-
-print(res_top25$fisher[, c("anchor_class", "n_anchors", "n_overlap",
-                            "pct_overlap", "fold_enrichment",
-                            "OR", "CI_low", "CI_high", "p_value", "p_adj", "significance")])
-
-write.table(res_top25$fisher,
-            file.path(loops_files_dir, "loop_anchor_EP1_top25_chip_fisher.tsv"),
-            sep = "\t", row.names = FALSE, quote = FALSE)
-
-p_polar_top25 <- plot_anchor_polar(
-  res_top25$counts,
-  "Top25 E2A-PBX1 peak enrichment per loop anchor class\n(pooled anchor background)"
-)
-print(p_polar_top25)
-ggsave(file.path(loops_plots_dir, "loop_anchor_EP1_top25_polar.pdf"),
-       p_polar_top25, width = 10, height = 6)
-
-p_forest_top25 <- plot_anchor_forest(
-  res_top25$fisher,
-  "Fisher's exact test: Top25 E2A-PBX1 peak enrichment\nper loop anchor class vs other anchor classes"
-)
-print(p_forest_top25)
-ggsave(file.path(loops_plots_dir, "loop_anchor_EP1_top25_forest.pdf"),
-       p_forest_top25, width = 8, height = 5)
 ```
 
 ---
