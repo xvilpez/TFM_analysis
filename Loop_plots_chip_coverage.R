@@ -70,7 +70,7 @@ all_cov <- bind_rows(cov, rnd) %>%
 # ============================================================================
 # Helper: build bracket segments + labels from sig_ann data frame
 # ============================================================================
-make_brackets <- function(sig_ann, tick_drop = 0.05, label_lift = 0.07) {
+make_brackets <- function(sig_ann, tick_drop = 0.05, label_lift = 0.09) {
   segments <- bind_rows(
     sig_ann %>% transmute(x = x,    xend = xend, y = y.position,              yend = y.position),
     sig_ann %>% transmute(x = x,    xend = x,    y = y.position - tick_drop,  yend = y.position),
@@ -91,7 +91,7 @@ wilcox_pairwise <- cov_loops %>%
 
 sig_pairwise <- wilcox_pairwise %>%
   filter(p.adj < 0.05) %>%
-  select(group1, group2, p.adj.signif)
+  select(group1, group2, p.adj, p.adj.signif)
 
 x_pos_loops <- setNames(seq_along(loop_class_levels), loop_class_levels)
 
@@ -105,7 +105,8 @@ sig_pairwise <- sig_pairwise %>%
                      length.out = n()),
     x    = x_pos_loops[group1],
     xend = x_pos_loops[group2],
-    xmid = (x_pos_loops[group1] + x_pos_loops[group2]) / 2
+    xmid = (x_pos_loops[group1] + x_pos_loops[group2]) / 2,
+    p.adj.signif = paste0("p=", signif(p.adj, 2))
   )
 
 brk_pairwise <- make_brackets(sig_pairwise)
@@ -125,7 +126,7 @@ p_box_pairwise <- ggplot(cov_loops, aes(x = loop_class, y = log2_CPM, fill = loo
   geom_text(
     data = brk_pairwise$labels,
     aes(x = x, y = y, label = label),
-    inherit.aes = FALSE, size = 4
+    inherit.aes = FALSE, size = 3
   ) +
   scale_fill_manual(values = class_colors) +
   scale_y_continuous(expand = expansion(mult = c(0.05, 0.18))) +
@@ -188,7 +189,7 @@ wilcox_vs_random <- lapply(loop_class_levels, function(cls) {
 
 sig_vs_random <- wilcox_vs_random %>%
   filter(p.adj < 0.05) %>%
-  select(group1, group2, p.adj.signif)
+  select(group1, group2, p.adj, p.adj.signif)
 
 x_pos_full <- setNames(seq_along(level_order_full), level_order_full)
 
@@ -202,7 +203,8 @@ sig_vs_random <- sig_vs_random %>%
                      length.out = n()),
     x    = x_pos_full[group1],
     xend = x_pos_full[group2],
-    xmid = (x_pos_full[group1] + x_pos_full[group2]) / 2
+    xmid = (x_pos_full[group1] + x_pos_full[group2]) / 2,
+    p.adj.signif = paste0("p=", signif(p.adj, 2))
   )
 
 brk_random <- make_brackets(sig_vs_random)
@@ -222,7 +224,7 @@ p_box_random <- ggplot(all_cov, aes(x = loop_class, y = log2_CPM, fill = loop_cl
   geom_text(
     data = brk_random$labels,
     aes(x = x, y = y, label = label),
-    inherit.aes = FALSE, size = 4
+    inherit.aes = FALSE, size = 3
   ) +
   scale_fill_manual(values = class_colors) +
   scale_y_continuous(expand = expansion(mult = c(0.05, 0.22))) +
