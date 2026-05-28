@@ -2175,6 +2175,237 @@ write.table(res_full$fisher,
 
 ```
 
+```{r ATAC-Seq + loops homer-motif-heatmaps, fig.width=12, fig.height=14}
+library(dplyr)
+library(tidyr)
+library(pheatmap)
+library(RColorBrewer)
+
+# ----------------------------------------------------------------------------
+# 1. Paths
+# ----------------------------------------------------------------------------
+homer_base_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/loops/intersected_loops/atac_intersection/HOMER"
+
+bg_types       <- c("loopsBg", "WGbg")
+anchor_classes <- c("ARO", "EP1", "REH", "shared_loops")
+
+anchor_heatmap_colors <- c(
+  "REH"          = "#e74c3c",
+  "EP1"          = "#3498db",
+  "ARO"          = "#2ecc71",
+  "shared_loops" = "#34495e"
+)
+
+# ----------------------------------------------------------------------------
+# 2. Helper: load one knownResults.txt
+# ----------------------------------------------------------------------------
+load_homer <- function(folder) {
+  fpath <- file.path(homer_base_dir, folder, "knownResults.txt")
+  if (!file.exists(fpath)) {
+    warning(paste("File not found:", fpath))
+    return(NULL)
+  }
+  df      <- read.delim(fpath, check.names = FALSE, stringsAsFactors = FALSE)
+  log_col <- grep("log.*p.value", colnames(df), ignore.case = TRUE, value = TRUE)[1]
+  q_col   <- grep("q.value|benjamini", colnames(df), ignore.case = TRUE, value = TRUE)[1]
+  df$log_pval <- as.numeric(df[[log_col]])
+  df$q_val    <- as.numeric(df[[q_col]])
+  df$TF_Key   <- trimws(gsub("\\(.*", "", df[["Motif Name"]]))
+  return(df)
+}
+
+# ----------------------------------------------------------------------------
+# 3. Build matrix — all TFs passing p < 0.05 (raw)
+# ----------------------------------------------------------------------------
+build_matrix_pval <- function(bg_suffix, log_thresh = log10(0.05)) {
+
+  results_list <- list()
+  for (cls in anchor_classes) {
+    df <- load_homer(paste0(cls, "_", bg_suffix))
+    if (is.null(df)) next
+    df$AnchorClass <- cls
+    results_list[[cls]] <- df
+  }
+  if (length(results_list) == 0) { warning("No data for: ", bg_suffix); return(NULL) }
+
+  combined    <- bind_rows(results_list)
+  sig_tf_keys <- combined %>%
+    filter(log_pval < log_thresh) %>%
+    pull(TF_Key) %>% unique()
+
+  cat(sprintf("  [%s | p<0.05] %d significant TFs\n", bg_suffix, length(sig_tf_keys)))
+  if (length(sig_tf_keys) == 0) return(NULL)
+
+  mat_df <- combined %>%
+    filter(TF_Key %in% sig_tf_keys) %>%
+    group_by(TF_Key, AnchorClass) %>%
+    slice_min(log_pval, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    mutate(neg_log_p = -log_pval) %>%
+    select(TF_Key, AnchorClass, neg_log_p) %>%
+    pivot_wider(names_from = AnchorClass, values_from = neg_log_p, values_fill = 0)
+
+  mat          <- as.matrix(mat_df[, -1])
+  rownames(mat) <- mat_df$TF_Key
+  mat[, intersect(anchor_classes, colnames(mat)), drop = FALSE]
+}
+
+# ----------------------------------------------------------------------------
+# 4. Build matrix — top 10 TFs per condition by log p-value
+# ----------------------------------------------------------------------------
+build_matrix_top10 <- function(bg_suffix) {
+
+  results_list <- list()
+  for (cls in anchor_classes) {
+    df <- load_homer(paste0(cls, "_", bg_suffix))
+    if (is.null(df)) next
+    df$AnchorClass <- cls
+    results_list[[cls]] <- df
+  }
+  if (length(results_list) == 0) { warning("No data for: ", bg_suffix); return(NULL) }
+
+  combined      <- bind_rows(results_list)
+  top10_tf_keys <- combined %>%
+    group_by(AnchorClass) %>%
+    slice_min(log_pval, n = 10, with_ties = FALSE) %>%
+    ungroup() %>%
+    pull(TF_Key) %>% unique()
+
+  cat(sprintf("  [%s | top10] %d unique TFs across all classes\n",
+              bg_suffix, length(top10_tf_keys)))
+
+  mat_df <- combined %>%
+    filter(TF_Key %in% top10_tf_keys) %>%
+    group_by(TF_Key, AnchorClass) %>%
+    slice_min(log_pval, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    mutate(neg_log_p = -log_pval) %>%
+    select(TF_Key, AnchorClass, neg_log_p) %>%
+    pivot_wider(names_from = AnchorClass, values_from = neg_log_p, values_fill = 0)
+
+  mat           <- as.matrix(mat_df[, -1])
+  rownames(mat) <- mat_df$TF_Key
+  mat[, intersect(anchor_classes, colnames(mat)), drop = FALSE]
+}
+
+# ----------------------------------------------------------------------------
+# 5. Column annotation
+# ----------------------------------------------------------------------------
+make_col_annot <- function(mat) {
+  ann_df <- data.frame(AnchorClass = colnames(mat), row.names = colnames(mat))
+  list(df     = ann_df,
+       colors = list(AnchorClass = anchor_heatmap_colors[colnames(mat)]))
+}
+
+# ----------------------------------------------------------------------------
+# 6. Generic heatmap drawer — saves PDF and renders inline
+# ----------------------------------------------------------------------------
+draw_homer_heatmap <- function(mat, title_str, out_pdf) {
+
+  outlier_rows <- grepl("^CTCF|^BORIS", rownames(mat), ignore.case = FALSE)
+  nonzero_vals <- mat[!outlier_rows, ][mat[!outlier_rows, ] > 0]
+  if (length(nonzero_vals) == 0) nonzero_vals <- mat[mat > 0]
+
+  cap_val    <- round(quantile(nonzero_vals, 0.95, na.rm = TRUE), 1)
+  mat_capped <- pmin(mat, cap_val)
+
+  ann        <- make_col_annot(mat_capped)
+  n          <- nrow(mat_capped)
+  heat_cols  <- colorRampPalette(c("white", "#FFF7EC", "#FDD49E",
+                                    "#FC8D59", "#D7301F", "#7F0000"))(100)
+  full_title <- paste0(title_str, "\n(colour capped at 95th pctile = ", cap_val,
+                       " — CTCF/BORIS capped)")
+  brks       <- seq(0, cap_val, length.out = 101)
+  pdf_h      <- max(5, n * 0.12 + 3)
+  pdf_w      <- 8
+
+  # pheatmap's built-in filename argument handles PDF saving cleanly
+  # without interfering with the active graphics device
+  pheatmap(
+    mat_capped,
+    color                = heat_cols,
+    cluster_rows         = TRUE,
+    cluster_cols         = FALSE,
+    show_rownames        = TRUE,
+    show_colnames        = TRUE,
+    annotation_col       = ann$df,
+    annotation_colors    = ann$colors,
+    annotation_names_col = FALSE,
+    fontsize_row         = 7,
+    fontsize_col         = 11,
+    cellwidth            = 40,
+    cellheight           = 8,
+    angle_col            = 45,
+    border_color         = "grey92",
+    main                 = full_title,
+    breaks               = brks,
+    na_col               = "grey95",
+    filename             = out_pdf,   # saves directly, no pdf() device needed
+    width                = pdf_w,
+    height               = pdf_h
+  )
+
+  # Separate inline render — goes to the active screen/knitr device only
+  pheatmap(
+    mat_capped,
+    color                = heat_cols,
+    cluster_rows         = TRUE,
+    cluster_cols         = FALSE,
+    show_rownames        = TRUE,
+    show_colnames        = TRUE,
+    annotation_col       = ann$df,
+    annotation_colors    = ann$colors,
+    annotation_names_col = FALSE,
+    fontsize_row         = 7,
+    fontsize_col         = 11,
+    cellwidth            = 40,
+    cellheight           = 8,
+    angle_col            = 45,
+    border_color         = "grey92",
+    main                 = full_title,
+    breaks               = brks,
+    na_col               = "grey95"
+    # no filename here — renders to screen/knitr only
+  )
+
+  cat(sprintf("  Saved: %s  (%d rows, cap=%.1f)\n", out_pdf, n, cap_val))
+}
+
+# ----------------------------------------------------------------------------
+# 7. Main loop — produce both versions for each background
+# ----------------------------------------------------------------------------
+for (bg in bg_types) {
+
+  cat("\n=== HOMER motif heatmaps —", bg, "===\n")
+
+  # Version 1: all TFs passing p < 0.05
+  mat_all <- build_matrix_pval(bg)
+  if (!is.null(mat_all)) {
+    draw_homer_heatmap(
+      mat       = mat_all,
+      title_str = paste0("Motif enrichment — ", bg,
+                         "  |  all TFs (p < 0.05)  |  ", nrow(mat_all), " TFs"),
+      out_pdf   = file.path(homer_base_dir,
+                            paste0("homer_heatmap_", bg, "_allTFs.pdf"))
+    )
+  }
+
+  # Version 2: top 10 TFs per condition
+  mat_top10 <- build_matrix_top10(bg)
+  if (!is.null(mat_top10)) {
+    draw_homer_heatmap(
+      mat       = mat_top10,
+      title_str = paste0("Motif enrichment — ", bg,
+                         "  |  top 10 TFs per condition  |  ", nrow(mat_top10), " TFs"),
+      out_pdf   = file.path(homer_base_dir,
+                            paste0("homer_heatmap_", bg, "_top10.pdf"))
+    )
+  }
+}
+
+cat("\n=== HOMER motif heatmap analysis complete ===\n")
+```
+
 ---
 # Session info
 
