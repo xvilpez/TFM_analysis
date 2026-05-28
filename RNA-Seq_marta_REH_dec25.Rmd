@@ -3665,6 +3665,60 @@ ggsave(
   height = 10
 )
 
+bracket_df_simplified <- bracket_df %>%
+  mutate(y_pos = pmin(y_pos, 2.8))
+
+counts_boxplot_simplified <- ggplot(
+  counts_comp,
+  aes(x = condition, y = log2_centered, fill = switching)
+) +
+  geom_boxplot(
+    width         = 0.25,
+    outlier.shape = NA,
+    alpha         = 0.8,
+    linewidth     = 0.4
+  ) +
+  geom_hline(
+    yintercept = 0,
+    linetype   = "dashed",
+    color      = "gray30",
+    linewidth  = 0.4
+  ) +
+  {if (nrow(bracket_df) > 0)
+    geom_text(
+      data        = bracket_df_simplified,
+      aes(x       = condition, y = y_pos, label = sig),
+      size        = 3,
+      fontface    = "bold",
+      color       = "gray20",
+      inherit.aes = FALSE
+    )
+  } +
+  scale_fill_manual(values = switching_colors) +
+  coord_cartesian(ylim = c(-3, 3)) +
+  facet_wrap(~ switching, nrow = 2, ncol = 4) +
+  theme_bw() +
+  theme(
+    axis.text.x      = element_text(angle = 45, hjust = 1, size = 10),
+    axis.title       = element_text(size = 11),
+    plot.title       = element_text(hjust = 0.5, face = "bold", size = 13),
+    strip.text       = element_text(face = "bold"),
+    strip.background = element_rect(fill = "grey95", color = "black"),
+    legend.position  = "none",
+    panel.grid.minor = element_blank()
+  ) +
+  xlab("Condition") +
+  ylab("Log2 normalized counts (batch-corrected, mean-centered)") +
+  labs(title = "Gene expression across all compartment classes")
+
+print(counts_boxplot_simplified)
+ggsave(
+  file.path(comp_dir, "Log2counts_boxplot_all_classes_simplified.pdf"),
+  plot   = counts_boxplot_simplified,
+  width  = 16,
+  height = 10
+)
+
 cat("\n=== Compartment intersection analysis complete ===\n")
 ```
 
