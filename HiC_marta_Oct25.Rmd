@@ -21,8 +21,8 @@ knitr::opts_chunk$set(
   message = FALSE,
   fig.align = "center"
 )
- knitr::opts_knit$set(root.dir = "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore")
-# knitr::opts_knit$set(root.dir = "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore")
+ # knitr::opts_knit$set(root.dir = "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore")
+knitr::opts_knit$set(root.dir = "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore")
 
 ```
 
@@ -89,8 +89,8 @@ All bedgraph files are loaded from the cscore iteration trial directory.
 Each file contains four columns: `chr`, `start`, `end`, and the cscore `score`.
 
 ```{r load-data}
- data_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore"
-# data_dir <-"/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore"
+ # data_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore"
+data_dir <-"/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/cscore"
 
 read_cscore <- function(filename, score_colname) {
   read.table(file.path(data_dir, filename),
@@ -827,54 +827,57 @@ knitr::kable(group_summary,
 ## 5.6 Heatmap
 
 ```{r heatmap, fig.width=12, fig.height=16, fig.align="center"}
+# Define your custom order
+custom_order <- c("B_A_A", "B_A_B", "B_B_A", "A_B_B", "A_B_A", "A_A_B")
+
 # Filter dynamic bins and complete cases
 dynamic_bins_complete <- cs_REH_merge %>%
   filter(!switching %in% c("A_A_A", "B_B_B")) %>%
   filter(!is.na(score_REH) & !is.na(score_EP1_merge) & !is.na(score_EP1_Aro_merge)) %>%
-  arrange(switching)
+  mutate(switching = factor(switching, levels = custom_order)) %>%  # factor before arrange
+  arrange(switching)                                                 # now sorts by your order
 
 # Prepare heatmap matrix
 cscore_heat_dyn <- as.matrix(dynamic_bins_complete[, c("score_REH", "score_EP1_merge", "score_EP1_Aro_merge")])
 rownames(cscore_heat_dyn) <- rownames(dynamic_bins_complete)
 colnames(cscore_heat_dyn) <- c("REH", "EP1", "EP1_Aro")
 
-# Prepare row annotation using switching codes directly
+# Prepare row annotation
 annot_row <- data.frame(
-  Switching = factor(dynamic_bins_complete$switching,
-                     levels = switching_levels[!switching_levels %in% c("A_A_A", "B_B_B")])
+  Switching = factor(dynamic_bins_complete$switching, levels = custom_order)
 )
 rownames(annot_row) <- rownames(cscore_heat_dyn)
 
-# Annotation colors keyed on switching codes
+# Annotation colors
 annot_colors <- list(
-  Switching = switching_colors[levels(annot_row$Switching)]
+  Switching = switching_colors[custom_order]
 )
 
 # Heatmap colors
 library(RColorBrewer)
 heat_colors <- colorRampPalette(rev(brewer.pal(11, "RdYlBu")))(1000)
 # Then swap red→yellow direction:
-heat_colors <- colorRampPalette(c("#4575B4", "#FFFFBF", "#FEE090"))(1000)
+heat_colors <- colorRampPalette(c("#d8b365", "#f5f5f5", "#5ab4ac"))(1000)
 
 # Plot heatmap
-# pdf(file.path(plots_dir, "cscore_heatmap.pdf"), width = 10, height = 14)
-# pheatmap(cscore_heat_dyn,
-#          color                = heat_colors,
-#          cluster_rows         = FALSE,
-#          cluster_cols         = FALSE,
-#          show_rownames        = FALSE,
-#          annotation_row       = annot_row,
-#          annotation_colors    = annot_colors,
-#          annotation_names_row = FALSE,
-#          treeheight_row       = 50,
-#          scale                = "row",
-#          fontsize             = 12,
-#          fontsize_col         = 13,
-#          angle_col            = 45,
-#          legend_breaks        = c(-1, -0.5, 0, 0.5, 1),
-#          main                 = "Cscore Heatmap – Dynamic bins only (REH / EP1 / EP1_Aro)",
-#          mar                  = c(4, 6, 4, 10))
-# dev.off()
+pdf(file.path(plots_dir, "cscore_heatmap.pdf"), width = 10, height = 14)
+pheatmap(cscore_heat_dyn,
+         color                = heat_colors,
+         cluster_rows         = FALSE,
+         cluster_cols         = FALSE,
+         show_rownames        = FALSE,
+         annotation_row       = annot_row,
+         annotation_colors    = annot_colors,
+         annotation_names_row = FALSE,
+         treeheight_row       = 50,
+         scale                = "row",
+         fontsize             = 12,
+         fontsize_col         = 13,
+         angle_col            = 45,
+         legend_breaks        = c(-1, -0.5, 0, 0.5, 1),
+         main                 = "Cscore Heatmap – Dynamic bins only (REH / EP1 / EP1_Aro)",
+         mar                  = c(4, 6, 4, 10))
+dev.off()
 
 pheatmap(cscore_heat_dyn,
          color                = heat_colors,
