@@ -3665,7 +3665,6 @@ ggsave(
   height = 10
 )
 
-<<<<<<< HEAD
 bracket_df_simplified <- bracket_df %>%
   mutate(y_pos = pmin(y_pos, 2.8))
 
@@ -3676,21 +3675,6 @@ counts_boxplot_simplified <- ggplot(
   geom_boxplot(
     width         = 0.25,
     outlier.shape = NA,
-=======
-counts_boxplot_y4 <- ggplot(
-  counts_comp,
-  aes(x = condition, y = log2_centered, fill = switching)
-) +
-  geom_violin(
-    alpha     = 0.4,
-    linewidth = 0.3,
-    trim      = FALSE
-  ) +
-  geom_boxplot(
-    width         = 0.25,
-    outlier.size  = 0.4,
-    outlier.alpha = 0.3,
->>>>>>> 5d948661d78577991242b07f1f4ed3e20cf59dff
     alpha         = 0.8,
     linewidth     = 0.4
   ) +
@@ -3702,11 +3686,7 @@ counts_boxplot_y4 <- ggplot(
   ) +
   {if (nrow(bracket_df) > 0)
     geom_text(
-<<<<<<< HEAD
       data        = bracket_df_simplified,
-=======
-      data        = bracket_df,
->>>>>>> 5d948661d78577991242b07f1f4ed3e20cf59dff
       aes(x       = condition, y = y_pos, label = sig),
       size        = 3,
       fontface    = "bold",
@@ -3715,11 +3695,7 @@ counts_boxplot_y4 <- ggplot(
     )
   } +
   scale_fill_manual(values = switching_colors) +
-<<<<<<< HEAD
   coord_cartesian(ylim = c(-3, 3)) +
-=======
-  scale_y_continuous(limits = c(-4, 4)) +        # <-- added
->>>>>>> 5d948661d78577991242b07f1f4ed3e20cf59dff
   facet_wrap(~ switching, nrow = 2, ncol = 4) +
   theme_bw() +
   theme(
@@ -3735,17 +3711,10 @@ counts_boxplot_y4 <- ggplot(
   ylab("Log2 normalized counts (batch-corrected, mean-centered)") +
   labs(title = "Gene expression across all compartment classes")
 
-<<<<<<< HEAD
 print(counts_boxplot_simplified)
 ggsave(
   file.path(comp_dir, "Log2counts_boxplot_all_classes_simplified.pdf"),
   plot   = counts_boxplot_simplified,
-=======
-print(counts_boxplot_y4)
-ggsave(
-  file.path(comp_dir, "Log2counts_boxplot_all_classes_y4.pdf"),
-  plot   = counts_boxplot_y4,
->>>>>>> 5d948661d78577991242b07f1f4ed3e20cf59dff
   width  = 16,
   height = 10
 )
