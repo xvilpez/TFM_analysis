@@ -45,13 +45,13 @@ output_dir  <- "DEG_results"
 qc_dir                  <- file.path(output_dir, "QC")
 contrasts_dir           <- file.path(output_dir, "Contrasts")
 clusters_dir            <- file.path(output_dir, "Clusters")
-loops_dir               <- file.path(output_dir, "Loops")
-comp_dir                <- file.path(output_dir, "Compartments")
-comp_enrichr_dir        <- file.path(comp_dir, "enrichr_compartments")
-
-# Motif sub-folders (created here; homer paths defined later)
-homer_promoter_dir      <- file.path(clusters_dir, "homer_promoter_motifs")
-homer_chip_dir          <- file.path(clusters_dir, "homer_chip_motifs")
+# loops_dir               <- file.path(output_dir, "Loops")
+# comp_dir                <- file.path(output_dir, "Compartments")
+# comp_enrichr_dir        <- file.path(comp_dir, "enrichr_compartments")
+# 
+# # Motif sub-folders (created here; homer paths defined later)
+# homer_promoter_dir      <- file.path(clusters_dir, "homer_promoter_motifs")
+# homer_chip_dir          <- file.path(clusters_dir, "homer_chip_motifs")
 
 # Gene-list sub-folders
 contrasts_genelists_dir <- file.path(contrasts_dir, "enrichment_gene_lists")
@@ -1096,4 +1096,114 @@ for (contrast_name in names(all_results)) {
   print(knitr::kable(top_deg, digits = 3))
   cat("\n\n")
 }
+```
+
+```{r Clustering exploration - collect DEGs from all contrasts}
+
+# Collect all unique DEGs across all contrasts
+all_deg_genes <- unique(unlist(lapply(all_results, function(df) {
+  df %>%
+    filter(diffexpressed != "NO") %>%
+    pull(gene)
+})))
+
+cat(paste("Total unique DEGs across all contrasts:", length(all_deg_genes), "\n\n"))
+
+# Extract VST-transformed values for all DEGs (batch-corrected matrix)
+mat_all_deg <- assay(vsd_batch)[all_deg_genes, , drop = FALSE]
+
+# Remove any rows with NA or Inf values
+valid_rows <- complete.cases(mat_all_deg) &
+              !apply(mat_all_deg, 1, function(x) any(is.infinite(x)))
+mat_all_deg <- mat_all_deg[valid_rows, ]
+
+mat_scaled <- t(scale(t(mat_all_deg)))   # z-score per gene (row)
+
+# Remove any genes with zero variance (scale() produces NaN for those)
+valid_rows  <- complete.cases(mat_scaled) &
+               !apply(mat_scaled, 1, function(x) any(is.infinite(x)))
+mat_scaled  <- mat_scaled[valid_rows, ]
+mat_all_deg <- mat_all_deg[valid_rows, ]   # keep raw in sync for reference
+
+cat(paste("Genes after variance filter:", nrow(mat_scaled), "\n\n"))
+cat(paste("Genes used for clustering:", nrow(mat_all_deg), "\n\n"))
+```
+
+```{r Hierarchical clustering - dendrogram to inform choice of k}
+
+# ── Hierarchical clustering on genes (rows) ─────────────────────────────────
+# Using correlation distance (1 - Pearson r) is generally more robust than
+# Euclidean for expression z-scores, since it focuses on the SHAPE of the
+# expression pattern across samples rather than absolute magnitude
+gene_dist <- as.dist(1 - cor(t(mat_scaled), method = "pearson"))
+hc_genes  <- hclust(gene_dist, method = "ward.D2")
+
+# ── Plot plain dendrogram (NO cut lines) — just to inspect tree structure ───
+pdf(file.path(clusters_dir, "hierarchical_dendrogram_DEGs.pdf"), width = 12, height = 7)
+plot(hc_genes, labels = FALSE, hang = -1,
+     main = "Hierarchical clustering of all DEGs (1 - Pearson correlation, Ward.D2)",
+     xlab = "Genes", sub = "")
+dev.off()
+
+plot(hc_genes, labels = FALSE, hang = -1,
+     main = "Hierarchical clustering of all DEGs (1 - Pearson correlation, Ward.D2)",
+     xlab = "Genes", sub = "")
+
+# ── Heatmap with row dendrogram, NO cluster cutting ─────────────────────────
+# pheatmap clusters internally using cluster_rows = hc_genes and just draws
+# the resulting dendrogram alongside the heatmap. No cutree(), no k, no
+# cluster assignment/annotation — purely descriptive.
+
+ann_col_hc <- coldata_merged[colnames(mat_scaled), c("condition", "batch")]
+
+p_heatmap_nocut <- pheatmap(
+  mat_scaled,
+  scale             = "none",
+  annotation_col    = ann_col_hc,
+  cluster_rows      = hc_genes,
+  cluster_cols      = TRUE,
+  show_rownames     = FALSE,
+  show_colnames     = TRUE,
+  border_color      = NA,
+  color             = colorRampPalette(rev(brewer.pal(9, "RdBu")))(255),
+  fontsize_col      = 8,
+  main              = "All DEGs — hierarchical clustering (no cut)"
+)
+
+ggsave(file.path(clusters_dir, "hierarchical_heatmap_nocut.pdf"),
+       p_heatmap_nocut, width = 11, height = 14)
+
+# ── Merge-height gap plot — helps justify a choice of k objectively ────────
+# In hclust, hc_genes$height is sorted ascending = the distance at which each
+# merge happened. Big *jumps* (gaps) between consecutive merge heights, read
+# from the top of the tree down, indicate a "natural" place to cut: small gap
+# = clusters being merged were already similar; big gap = you're forcing
+# together two clusters that were quite distinct.
+heights_desc <- rev(hc_genes$height)   # tallest merges first
+n_show       <- 20                      # inspect the top 20 merges
+
+height_gap_df <- data.frame(
+  k          = seq_len(n_show),         # k = number of clusters if cut just BELOW this merge
+  height     = heights_desc[seq_len(n_show)],
+  gap_to_next = c(diff(heights_desc[seq_len(n_show)]) * -1, NA)
+)
+
+cat("Top", n_show, "merge heights (descending) and gap to next merge:\n")
+cat("Look for the largest 'gap_to_next' — the k just BEFORE that gap is a\n",
+    "natural candidate (a big drop means the next merge fused two genuinely\n",
+    "distinct groups).\n\n", sep = "")
+print(height_gap_df)
+
+p_gap <- ggplot(height_gap_df, aes(k, height)) +
+  geom_line() + geom_point(size = 3) +
+  scale_x_continuous(breaks = height_gap_df$k) +
+  theme_bw() +
+  labs(title = "Merge height vs k (top merges only)",
+       subtitle = "Look for the 'elbow' / biggest drop to pick a candidate k",
+       x = "Number of clusters (k) if cut here", y = "Merge height (1 - Pearson r)")
+print(p_gap)
+ggsave(file.path(clusters_dir, "merge_height_gap_plot.pdf"), p_gap, width = 7, height = 5)
+
+cat("\nInspect the dendrogram shape and the gap plot above, then set\n",
+    "k_for_heatmap manually in the next chunk based on what you see.\n", sep = "")
 ```
