@@ -1,0 +1,2586 @@
+---
+title: "RNA-Seq_marta_REH_mar26"
+author: "Xavier Vilchez-Perez"
+date: "2026-03-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
+#knitr::opts_knit$set(root.dir ="/ijc/LABS/STIK/RAW/rna_seq/rnaseq_marta_REHArg_mar26") ### If I run it through OnDemand server
+knitr::opts_knit$set(root.dir = "R:/R_STIK/rna_seq/rnaseq_marta_REHArg_mar26") ### If I run it in the workstation
+```
+
+```{r initialization, warning=FALSE, message=FALSE}
+library(DESeq2)
+library(tidyverse)
+library(ggrepel)
+library(pheatmap)
+library(RColorBrewer)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(vsn)
+library(limma)
+library(clusterProfiler)
+library(enrichplot)
+library(DOSE)
+library(gridExtra)
+library(ReactomePA)
+library(factoextra)
+library(NbClust)
+library(ashr)
+library(DEGreport)
+library(enrichR)
+
+```
+
+```{r Create output directory structure}
+# ============================================================================
+# MASTER OUTPUT DIRECTORY STRUCTURE
+# ============================================================================
+
+output_dir  <- "DEG_results"
+
+# Sub-folders
+qc_dir                  <- file.path(output_dir, "QC")
+contrasts_dir           <- file.path(output_dir, "Contrasts")
+clusters_dir            <- file.path(output_dir, "Clusters")
+loops_dir               <- file.path(output_dir, "Loops")
+comp_dir                <- file.path(output_dir, "Compartments")
+comp_enrichr_dir        <- file.path(comp_dir, "enrichr_compartments")
+
+# Motif sub-folders (created here; homer paths defined later)
+homer_promoter_dir      <- file.path(clusters_dir, "homer_promoter_motifs")
+homer_chip_dir          <- file.path(clusters_dir, "homer_chip_motifs")
+
+# Gene-list sub-folders
+contrasts_genelists_dir <- file.path(contrasts_dir, "enrichment_gene_lists")
+clusters_genelists_dir  <- file.path(clusters_dir,  "enrichment_gene_lists")
+
+for (d in c(qc_dir, contrasts_dir, clusters_dir, loops_dir, comp_dir,
+            comp_enrichr_dir, homer_promoter_dir, homer_chip_dir,
+            contrasts_genelists_dir, clusters_genelists_dir)) {
+  if (!dir.exists(d)) dir.create(d, recursive = TRUE)
+}
+```
+
+```{r Pre-DESeq2 PCA - All samples including dec25 GFP}
+
+# ── Paths ───────────────────────────────────────────────────────────────────
+star_dec25 <- "R:/R_STIK/rna_seq/rnaseq_marta_REHAro_dec25/STAR"
+star_mar26 <- "R:/R_STIK/rna_seq/rnaseq_marta_REHArg_mar26/STAR"
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
+read_star_counts <- function(file) {
+  df     <- read.table(file, skip = 4, header = FALSE)
+  counts <- df[, 2]
+  names(counts) <- gsub("\\..*", "", df$V1)
+  return(counts)
+}
+
+load_star_dir <- function(dir_path, exclude_pattern = NULL) {
+  files <- list.files(dir_path, pattern = "ReadsPerGene.out.tab$", full.names = TRUE)
+  if (!is.null(exclude_pattern))
+    files <- files[!grepl(exclude_pattern, basename(files))]
+  sample_names <- gsub("^STAR_(.*)ReadsPerGene\\.out\\.tab$", "\\1", basename(files))
+  counts_list  <- lapply(files, read_star_counts)
+  names(counts_list) <- sample_names
+  return(counts_list)
+}
+
+# ── Load all samples from both runs ─────────────────────────────────────────
+counts_dec25_full <- load_star_dir(star_dec25)   # includes dec25 GFP
+counts_mar26_full <- load_star_dir(star_mar26)   # includes mar26 GFP
+
+# Disambiguate GFP names before merging
+gfp_pattern <- "^RNA-REH-GFP-"
+names(counts_dec25_full) <- ifelse(
+  grepl(gfp_pattern, names(counts_dec25_full)),
+  paste0(names(counts_dec25_full), "_dec25"),
+  names(counts_dec25_full)
+)
+names(counts_mar26_full) <- ifelse(
+  grepl(gfp_pattern, names(counts_mar26_full)),
+  paste0(names(counts_mar26_full), "_mar26"),
+  names(counts_mar26_full)
+)
+
+all_counts_full   <- c(counts_dec25_full, counts_mar26_full)
+counts_mat_full   <- do.call(cbind, all_counts_full)
+sample_names_full <- colnames(counts_mat_full)
+
+cat("Samples loaded from dec25:", length(counts_dec25_full), "\n")
+cat("Samples loaded from mar26:", length(counts_mar26_full), "\n")
+cat("Total samples in matrix  :", ncol(counts_mat_full), "\n")
+cat("Sample names:\n"); cat(paste0("  ", sample_names_full, "\n"))
+
+# ── Gene symbol annotation + deduplication ──────────────────────────────────
+symbols_full <- mapIds(
+  org.Hs.eg.db,
+  keys      = rownames(counts_mat_full),
+  column    = "SYMBOL",
+  keytype   = "ENSEMBL",
+  multiVals = "first"
+)
+
+valid_syms            <- !is.na(symbols_full)
+counts_full_sym       <- counts_mat_full[valid_syms, ]
+rownames(counts_full_sym) <- symbols_full[valid_syms]
+
+counts_full_sym           <- as.data.frame(counts_full_sym)
+counts_full_sym$symbol    <- rownames(counts_full_sym)
+rownames(counts_full_sym) <- NULL
+counts_full_sym$mean_expr <- rowMeans(counts_full_sym[, sample_names_full])
+
+counts_full_sym <- counts_full_sym %>%
+  group_by(symbol) %>%
+  slice_max(mean_expr, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+counts_full_sym$mean_expr <- NULL
+counts_full_sym            <- as.data.frame(counts_full_sym)
+rownames(counts_full_sym)  <- counts_full_sym$symbol
+counts_full_sym$symbol     <- NULL
+
+coldata_full <- data.frame(
+  row.names = colnames(counts_full_sym),
+
+  condition = c(
+    rep("REH",  3),
+    rep("Aro",  3),
+    rep("EP1",  3),
+    rep("GFP",  3),
+    rep("Arg",  3),
+    rep("d189", 3),
+    rep("d89",  3),
+    rep("GFP",  3)
+  ),
+
+  batch = c(
+    rep("batch1", 3),
+    "batch1", "batch1", "batch2",
+    "batch1", "batch1", "batch2",
+    rep("batch1", 3),
+    rep("batch3", 3),
+    rep("batch3", 3),
+    rep("batch3", 3),
+    rep("batch3", 3)
+  ),
+
+  highlight = c(
+    rep("REH",       3),
+    rep("other",     6),   # fixed
+    rep("GFP_dec25", 3),
+    rep("other",     9),
+    rep("GFP_mar26", 3)
+  )
+)
+
+stopifnot(identical(rownames(coldata_full), colnames(counts_full_sym)))
+
+# ── VST (blind, intercept-only — purely exploratory) ────────────────────────
+dds_explore <- DESeqDataSetFromMatrix(
+  countData = counts_full_sym,
+  colData   = coldata_full,
+  design    = ~ 1
+)
+dds_explore <- dds_explore[rowSums(counts(dds_explore)) > 5, ]
+vsd_explore  <- vst(dds_explore, blind = TRUE)
+
+# ── PCA ─────────────────────────────────────────────────────────────────────
+pca_data   <- plotPCA(vsd_explore, intgroup = c("condition", "batch"), returnData = TRUE)
+percentVar <- round(100 * attr(pca_data, "percentVar"))
+
+# Attach highlight column for Plot 2
+pca_data$highlight <- coldata_full[rownames(pca_data), "highlight"]
+
+# Plot 1 — all 24 samples, condition + batch
+p_all <- ggplot(pca_data, aes(PC1, PC2, color = condition, shape = batch, label = name)) +
+  geom_point(size = 4) +
+  geom_text_repel(size = 3, max.overlaps = 40) +
+  scale_shape_manual(values = c(batch1 = 16, batch2 = 17, batch3 = 15)) +
+  theme_bw() +
+  xlab(paste0("PC1 (", percentVar[1], "% variance)")) +
+  ylab(paste0("PC2 (", percentVar[2], "% variance)")) +
+  ggtitle("PCA – All 24 samples (VST blind)\nColour = condition | Shape = batch")
+print(p_all)
+ggsave(file.path(qc_dir, "PCA_all24_condition_batch.pdf"), p_all, width = 10, height = 7)
+
+# Plot 2 — GFP (dec25 vs mar26) and REH highlighted
+p_highlight <- ggplot(pca_data, aes(PC1, PC2, label = name)) +
+  geom_point(aes(color = condition, shape = batch), size = 4, alpha = 0.5) +
+  geom_point(
+    data = pca_data[pca_data$highlight != "other", ],
+    aes(fill = highlight),
+    shape = 21, size = 5, color = "black", stroke = 1.2
+  ) +
+  geom_text_repel(size = 3, max.overlaps = 40) +
+  scale_shape_manual(values = c(batch1 = 16, batch2 = 17, batch3 = 15)) +
+  scale_fill_manual(
+    values = c(GFP_dec25 = "#FFD700", GFP_mar26 = "#1f78b4", REH = "#33a02c"),
+    name   = "Highlighted group",
+    labels = c(GFP_dec25 = "GFP batch1/dec25",
+               GFP_mar26 = "GFP batch3/mar26",
+               REH       = "REH batch1 (control)")
+  ) +
+  theme_bw() +
+  xlab(paste0("PC1 (", percentVar[1], "% variance)")) +
+  ylab(paste0("PC2 (", percentVar[2], "% variance)")) +
+  ggtitle("PCA – GFP and REH highlighted\ngold = GFP dec25 | blue = GFP mar26 | green = REH")
+print(p_highlight)
+ggsave(file.path(qc_dir, "PCA_all24_GFP_REH_highlight.pdf"), p_highlight, width = 10, height = 7)
+
+cat("Pre-DESeq2 PCA saved to", qc_dir, "\n")
+```
+```{r prePCA without GFP samples of dec25}
+
+# ── Remove dec25 GFP samples ────────────────────────────────────────────────
+keep_samples       <- coldata_full$highlight != "GFP_dec25"
+counts_noGFPdec25  <- counts_full_sym[, keep_samples]
+coldata_noGFPdec25 <- coldata_full[keep_samples, ]
+
+cat("Samples remaining:", ncol(counts_noGFPdec25), "\n")
+cat(paste0("  ", colnames(counts_noGFPdec25), "\n"))
+
+# ── VST blind — intercept only, purely for visualization ────────────────────
+# Cannot use ~ batch + condition here: batch3 contains ONLY batch3 conditions
+# (Arg, d189, d89, GFP_mar26) → model matrix is rank-deficient
+dds_noGFPdec25 <- DESeqDataSetFromMatrix(
+  countData = counts_noGFPdec25,
+  colData   = coldata_noGFPdec25,
+  design    = ~ 1
+)
+dds_noGFPdec25 <- dds_noGFPdec25[rowSums(counts(dds_noGFPdec25)) > 5, ]
+vsd_noGFPdec25  <- vst(dds_noGFPdec25, blind = TRUE)
+
+# ── PCA ─────────────────────────────────────────────────────────────────────
+pca_noGFPdec25 <- plotPCA(
+  vsd_noGFPdec25,
+  intgroup   = c("condition", "batch"),
+  returnData = TRUE
+)
+percentVar <- round(100 * attr(pca_noGFPdec25, "percentVar"))
+
+# Add highlight column
+pca_noGFPdec25$highlight <- coldata_noGFPdec25[rownames(pca_noGFPdec25), "highlight"]
+
+# Plot 1 — condition + batch
+p_no_gfp <- ggplot(pca_noGFPdec25,
+                   aes(PC1, PC2, color = condition, shape = batch, label = name)) +
+  geom_point(size = 4) +
+  geom_text_repel(size = 3, max.overlaps = 40) +
+  scale_shape_manual(values = c(batch1 = 16, batch2 = 17, batch3 = 15)) +
+  theme_bw() +
+  xlab(paste0("PC1 (", percentVar[1], "% variance)")) +
+  ylab(paste0("PC2 (", percentVar[2], "% variance)")) +
+  ggtitle("PCA – 21 samples (dec25 GFP removed, VST blind)\nColour = condition | Shape = batch")
+print(p_no_gfp)
+ggsave(file.path(qc_dir, "PCA_21samples_no_dec25GFP.pdf"), p_no_gfp, width = 10, height = 7)
+
+# Plot 2 — REH and GFP_mar26 highlighted
+p_no_gfp_hl <- ggplot(pca_noGFPdec25, aes(PC1, PC2, label = name)) +
+  geom_point(aes(color = condition, shape = batch), size = 4, alpha = 0.5) +
+  geom_point(
+    data = pca_noGFPdec25[pca_noGFPdec25$highlight != "other", ],
+    aes(fill = highlight),
+    shape = 21, size = 5, color = "black", stroke = 1.2
+  ) +
+  geom_text_repel(size = 3, max.overlaps = 40) +
+  scale_shape_manual(values = c(batch1 = 16, batch2 = 17, batch3 = 15)) +
+  scale_fill_manual(
+    values = c(GFP_mar26 = "#1f78b4", REH = "#33a02c"),
+    name   = "Highlighted group",
+    labels = c(GFP_mar26 = "GFP batch3/mar26",
+               REH       = "REH batch1 (control)")
+  ) +
+  theme_bw() +
+  xlab(paste0("PC1 (", percentVar[1], "% variance)")) +
+  ylab(paste0("PC2 (", percentVar[2], "% variance)")) +
+  ggtitle("PCA – 21 samples, REH and GFP_mar26 highlighted\nblue = GFP mar26 | green = REH")
+print(p_no_gfp_hl)
+ggsave(file.path(qc_dir, "PCA_21samples_REH_GFPmar26_highlight.pdf"),
+       p_no_gfp_hl, width = 10, height = 7)
+
+cat("PCA without dec25 GFP saved to", qc_dir, "\n")
+
+
+table(coldata_noGFPdec25$condition,
+      coldata_noGFPdec25$batch)
+```
+
+```{r STAR counts}
+# ============================================================================
+# STAR COUNTS - merged from two sequencing runs
+# dec25 folder : all samples EXCEPT STAR_RNA-REH-GFP*
+# mar26 folder : STAR_RNA-REH-GFP*  +  every other sample in that folder
+# ============================================================================
+
+# star_dec25 <- "/ijc/LABS/STIK/RAW/rna_seq/rnaseq_marta_REHAro_dec25/STAR"
+# star_mar26 <- "/ijc/LABS/STIK/RAW/rna_seq/rnaseq_marta_REHArg_mar26/STAR"
+
+star_dec25 <- "R:/R_STIK/rna_seq/rnaseq_marta_REHAro_dec25/STAR"
+star_mar26 <- "R:/R_STIK/rna_seq/rnaseq_marta_REHArg_mar26/STAR"
+
+# --- helper: read a single STAR ReadsPerGene file --------------------------
+read_star_counts <- function(file) {
+  df     <- read.table(file, skip = 4, header = FALSE)
+  counts <- df[, 2]
+  names(counts) <- gsub("\\..*", "", df$V1)   # strip Ensembl version suffix
+  return(counts)
+}
+
+# --- load samples -----------------------------------------------------------
+# dec25: exclude GFP samples (they come from mar26 instead)
+counts_dec25 <- load_star_dir(star_dec25, exclude_pattern = "GFP")
+
+# mar26: all samples present (includes the GFP samples)
+counts_mar26 <- load_star_dir(star_mar26)
+
+# --- merge into one matrix --------------------------------------------------
+# Combine both lists; mar26 entries will overwrite if names clash (they won't
+# here because dec25 already has GFP excluded, but this is safe practice)
+all_counts <- c(counts_dec25, counts_mar26)
+# all_counts <- counts_mar26
+
+counts_mat  <- do.call(cbind, all_counts)
+sample_names <- colnames(counts_mat)
+
+# cat("Samples loaded from dec25 :", length(counts_dec25), "\n")
+cat("Samples loaded from mar26 :", length(counts_mar26), "\n")
+cat("Total samples in matrix   :", ncol(counts_mat),     "\n")
+cat("Sample names:\n"); cat(paste0("  ", sample_names, "\n"))
+```
+
+```{r gene symbol annotation}
+# Map Ensembl IDs to gene symbols
+ensembl_ids <- rownames(counts_mat)
+symbols <- mapIds(
+  org.Hs.eg.db,
+  keys    = ensembl_ids,
+  column  = "SYMBOL",
+  keytype = "ENSEMBL",
+  multiVals = "first"
+)
+
+# Keep only genes with valid gene symbols (remove NAs)
+valid_symbols <- !is.na(symbols)
+cat(paste("Total genes:", length(symbols), "\n"))
+cat(paste("Genes with valid symbols:", sum(valid_symbols), "\n"))
+cat(paste("Genes removed (no symbol):", sum(!valid_symbols), "\n\n"))
+
+# Filter counts matrix to keep only genes with valid symbols
+counts_sym <- counts_mat[valid_symbols, ]
+rownames(counts_sym) <- symbols[valid_symbols]
+
+# Convert to dataframe for deduplication
+counts_sym        <- as.data.frame(counts_sym)
+counts_sym$symbol <- rownames(counts_sym)
+rownames(counts_sym) <- NULL
+
+# Calculate mean expression across the 21 samples and deduplicate
+# (keeping the row with highest mean expression per gene symbol)
+counts_sym$mean_expr <- rowMeans(counts_sym[, sample_names])   # explicit column selection
+counts_sym <- counts_sym %>%
+  group_by(symbol) %>%
+  slice_max(mean_expr, n = 1, with_ties = FALSE) %>%
+  ungroup()
+cat(paste("Final unique genes after deduplication:", nrow(counts_sym), "\n"))
+
+# Clean up and restore rownames
+counts_sym$mean_expr <- NULL
+counts_sym           <- as.data.frame(counts_sym)
+rownames(counts_sym) <- counts_sym$symbol
+counts_sym$symbol    <- NULL
+
+# Confirm column order is preserved
+stopifnot(identical(colnames(counts_sym), sample_names))
+```
+
+```{r DESeq2 Object}
+# ============================================================================
+# SAMPLE ORDER (21 samples, as returned by the STAR counts chunk)
+# ----------------------------------------------------------------------------
+#  1  RNA-REH-1                  |  REH      | batch1
+#  2  RNA-REH-2                  |  REH      | batch1
+#  3  RNA-REH-3                  |  REH      | batch1
+#  4  RNA-REH-EP1-AroLITE-GFP-1  |  Aro      | batch1
+#  5  RNA-REH-EP1-AroLITE-GFP-2  |  Aro      | batch1
+#  6  RNA-REH-EP1-AroLITE-GFP-3  |  Aro      | batch2
+#  7  RNA-REH-EP1-GFP-1          |  EP1      | batch1
+#  8  RNA-REH-EP1-GFP-2          |  EP1      | batch1
+#  9  RNA-REH-EP1-GFP-3          |  EP1      | batch2
+# 10  RNA-REH-EP1-Arg-1          |  Arg      | batch3
+# 11  RNA-REH-EP1-Arg-2          |  Arg      | batch3
+# 12  RNA-REH-EP1-Arg-3          |  Arg      | batch3
+# 13  RNA-REH-EP1-d189-1         |  d189     | batch3
+# 14  RNA-REH-EP1-d189-2         |  d189     | batch3
+# 15  RNA-REH-EP1-d189-3         |  d189     | batch3
+# 16  RNA-REH-EP1-d89-1          |  d89      | batch3
+# 17  RNA-REH-EP1-d89-2          |  d89      | batch3
+# 18  RNA-REH-EP1-d89-3          |  d89      | batch3
+# 19  RNA-REH-GFP-1              |  GFP      | batch3
+# 20  RNA-REH-GFP-2              |  GFP      | batch3
+# 21  RNA-REH-GFP-3              |  GFP      | batch3
+# ============================================================================
+
+coldata<- data.frame(
+  row.names = colnames(counts_sym),
+  condition = c(
+    rep("REH",  3),   # RNA-REH-1/2/3
+    rep("Aro",  3),   # RNA-REH-EP1-AroLITE-GFP-1/2/3
+    rep("EP1",  3),   # RNA-REH-EP1-GFP-1/2/3
+    rep("Arg",  3),   # RNA-REH-EP1-Arg-1/2/3
+    rep("d189", 3),   # RNA-REH-EP1-d189-1/2/3
+    rep("d89",  3),   # RNA-REH-EP1-d89-1/2/3
+    rep("GFP",  3)    # RNA-REH-GFP-1/2/3
+  ),
+  batch = c(
+    rep("batch1", 3),              # REH-1/2/3
+    "batch1", "batch1", "batch2",  # Aro-1/2 → batch1 ; Aro-3 → batch2
+    "batch1", "batch1", "batch2",  # EP1-1/2 → batch1 ; EP1-3 → batch2
+    rep("batch3", 9),              # Arg, d189, d89 (all mar26)
+    rep("batch3", 3)               # GFP (mar26)
+  )
+)
+
+# Sanity check: sample order must match counts_sym columns
+stopifnot(identical(rownames(coldata), colnames(counts_sym)))
+
+# Create DESeq2 object with ALL samples (including GFP)
+dds <- DESeqDataSetFromMatrix(
+  countData = counts_sym,
+  colData   = coldata,
+  design    = ~ condition
+)
+dds <- dds[rowSums(counts(dds)) > 5, ]
+dds$condition <- relevel(dds$condition, ref = "REH")
+# dds$condition <- relevel(dds$condition, ref = "GFP")
+
+# Run DESeq2
+dds <- DESeq(dds)
+```
+
+```{r Sequencing QC}
+# Library size plot
+libsize <- colSums(counts(dds))
+df_lib <- data.frame(
+  sample = names(libsize),
+  reads = libsize,
+  condition = coldata$condition
+)
+
+p_libsize <- ggplot(df_lib, aes(sample, reads, fill = condition)) +
+  geom_bar(stat = "identity") +
+  scale_y_log10() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ggtitle("Library size (log10)")
+print(p_libsize)
+ggsave(file.path(qc_dir, "library_size_batch3.pdf"), p_libsize, width = 10, height = 6)
+
+# VST transformation
+vsd_original <- vst(dds, blind=TRUE)
+
+# Batch-corrected version for visualization
+vsd_corrected <- vsd_original
+mat <- assay(vsd_original)
+mat_corrected <- removeBatchEffect(mat,
+                                   batch=vsd_original$batch,
+                                   design=model.matrix(~condition, colData(vsd_original)))
+assay(vsd_corrected) <- mat_corrected
+```
+
+```{r Sample QC - PCA}
+# PCA before batch correction
+pca_original <- plotPCA(vsd_original, intgroup = c("condition", "batch"), returnData = TRUE)
+
+percentVar <- round(100 * attr(pca_original, "percentVar"))
+
+p_pca_before <- ggplot(pca_original, aes(PC1, PC2, color = condition, shape = batch, label = name)) +
+  geom_point(size = 4) +
+  geom_text_repel() +
+  theme_bw() +
+  xlab(paste0("PC1 (", percentVar[1], "% variance)")) +
+  ylab(paste0("PC2 (", percentVar[2], "% variance)")) +
+  ggtitle("PCA – Before Batch Correction")
+print(p_pca_before)
+ggsave(file.path(qc_dir, "PCA_before_batch_correction.pdf"), p_pca_before, width = 8, height = 6)
+
+# PCA after batch correction
+pca_corrected <- plotPCA(vsd_corrected, intgroup = c("condition", "batch"), returnData = TRUE)
+
+percentVar_corrected <- round(100 * attr(pca_corrected, "percentVar"))
+
+p_pca_after <- ggplot(pca_corrected, aes(PC1, PC2, color = condition, shape = batch, label = name)) +
+  geom_point(size = 4) +
+  geom_text_repel() +
+  theme_bw() +
+  xlab(paste0("PC1 (", percentVar_corrected[1], "% variance)")) +
+  ylab(paste0("PC2 (", percentVar_corrected[2], "% variance)")) +
+  ggtitle("PCA – After Batch Correction")
+print(p_pca_after)
+ggsave(file.path(qc_dir, "PCA_after_batch_correction.pdf"), p_pca_after, width = 8, height = 6)
+```
+
+```{r Heatmap}
+# Top 500 variable genes
+top_var <- head(order(rowVars(assay(vsd_original)), decreasing = TRUE), 500)
+
+# Annotation
+ann <- data.frame(
+  condition = coldata$condition,
+  batch = coldata$batch,
+  row.names = colnames(counts_sym)
+)
+
+# Heatmap before batch correction
+mat_original <- assay(vsd_original)[top_var, ]
+mat_original <- mat_original - rowMeans(mat_original)
+
+pdf(file.path(qc_dir, "heatmap_top500_before_batch_correction.pdf"), width = 10, height = 10)
+pheatmap(
+  mat_original,
+  annotation_col = ann,
+  show_rownames = FALSE,
+  color = colorRampPalette(rev(brewer.pal(9,"RdBu")))(255),
+  fontsize_col = 10,
+  main = "Heatmap - Before Batch Correction"
+)
+dev.off()
+pheatmap(
+  mat_original,
+  annotation_col = ann,
+  show_rownames = FALSE,
+  color = colorRampPalette(rev(brewer.pal(9,"RdBu")))(255),
+  fontsize_col = 10,
+  main = "Heatmap - Before Batch Correction"
+)
+
+# Heatmap after batch correction
+mat_corrected <- assay(vsd_corrected)[top_var, ]
+mat_corrected <- mat_corrected - rowMeans(mat_corrected)
+
+pdf(file.path(qc_dir, "heatmap_top500_after_batch_correction.pdf"), width = 10, height = 10)
+pheatmap(
+  mat_corrected,
+  annotation_col = ann,
+  show_rownames = FALSE,
+  color = colorRampPalette(rev(brewer.pal(9,"RdBu")))(255),
+  fontsize_col = 10,
+  main = "Heatmap - After Batch Correction"
+)
+dev.off()
+pheatmap(
+  mat_corrected,
+  annotation_col = ann,
+  show_rownames = FALSE,
+  color = colorRampPalette(rev(brewer.pal(9,"RdBu")))(255),
+  fontsize_col = 10,
+  main = "Heatmap - After Batch Correction"
+)
+```
+
+```{r PBX1 Expression Check}
+if ("PBX1" %in% rownames(dds_with_gfp)) {
+  
+  # Get normalized counts
+  pbx1_counts <- counts(dds_with_gfp, normalized=TRUE)["PBX1", ]
+  
+  pbx1_df <- data.frame(
+    sample = names(pbx1_counts),
+    normalized_counts = pbx1_counts,
+    condition = coldata_with_gfp$condition,
+    batch = coldata_with_gfp$batch
+  )
+  
+  pbx1_df$group <- ifelse(grepl("RNA-REH-GFP", pbx1_df$sample), "Control_GFP",
+                   ifelse(grepl("RNA-REH-[0-9]", pbx1_df$sample), "Control_REH",
+                   as.character(pbx1_df$condition)))
+  
+  # Bar plot
+  p1 <- ggplot(pbx1_df, aes(x = sample, y = normalized_counts, fill = group)) +
+    geom_bar(stat = "identity") +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(title = "PBX1 Normalized Expression Across Samples",
+         y = "Normalized Counts",
+         x = "Sample") +
+    scale_fill_brewer(palette = "Set2")
+  print(p1)
+  ggsave(file.path(qc_dir, "PBX1_expression_barplot.pdf"), p1, width = 10, height = 6)
+  
+  # Boxplot
+  p2 <- ggplot(pbx1_df, aes(x = group, y = normalized_counts, fill = group)) +
+    geom_boxplot() +
+    geom_jitter(width = 0.2, size = 3) +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(title = "PBX1 Expression by Group",
+         y = "Normalized Counts",
+         x = "Group") +
+    scale_fill_brewer(palette = "Set2")
+  print(p2)
+  ggsave(file.path(qc_dir, "PBX1_expression_boxplot.pdf"), p2, width = 8, height = 6)
+  
+  # VST values
+  pbx1_vst <- assay(vsd_original)["PBX1", ]
+  pbx1_vst_corrected <- assay(vsd_corrected)["PBX1", ]
+  
+  pbx1_vst_df <- data.frame(
+    sample = names(pbx1_vst),
+    vst_original = pbx1_vst,
+    vst_corrected = pbx1_vst_corrected,
+    condition = coldata_with_gfp$condition,
+    batch = coldata_with_gfp$batch
+  )
+  
+  pbx1_vst_df$group <- ifelse(grepl("RNA-REH-GFP", pbx1_vst_df$sample), "Control_GFP",
+                       ifelse(grepl("RNA-REH-[0-9]", pbx1_vst_df$sample), "Control_REH",
+                       as.character(pbx1_vst_df$condition)))
+  
+} else {
+  cat("PBX1 gene not found in the dataset\n")
+}
+```
+
+## DECISION POINT: Excluding REH-GFP Samples
+
+Based on the PCA and heatmap analyses above, REH-GFP samples will be excluded.
+
+```{r DESeq2 Object WITHOUT GFP}
+# NOW create metadata EXCLUDING GFP samples for main analysis
+coldata <- data.frame(
+  row.names = colnames(counts_sym),
+  condition = c(
+      rep('REH', 3),           # RNA-REH-1, 2, 3
+      rep('Aro', 3),           # RNA-REH-EP1-AroLITE-GFP-1, 2, 3
+      rep('EP1', 3),           # RNA-REH-EP1-GFP-1, 2, 3
+      rep('GFP', 3)            # RNA-REH-GFP-1, 2, 3
+  ),
+  batch = c(
+    rep("batch1", 3),                    # RNA-REH-1, 2, 3
+    "batch1", "batch1", "batch2",        # EP1_Aro: samples 1,2 in batch1, sample 3 in batch2
+    "batch1", "batch1", "batch2",        # EP1: samples 1,2 in batch1, sample 3 in batch2
+    rep("batch1", 3)                     # RNA-REH-GFP-1, 2, 3
+  )
+)
+
+# Exclude REH-GFP samples
+coldata <- coldata[coldata$condition != "GFP", ]
+counts_sym_filtered <- counts_sym[, rownames(coldata)]
+
+# Create DESeq2 object with batch correction
+dds <- DESeqDataSetFromMatrix(
+  countData = counts_sym_filtered,
+  colData = coldata,
+  design = ~ batch + condition
+)
+dds <- dds[rowSums(counts(dds)) > 5, ]
+dds$condition <- relevel(dds$condition, ref="REH")
+
+# Run DESeq2 analysis (includes normalization)
+dds <- DESeq(dds)
+
+# VST transformation
+vsd_original <- vst(dds, blind=FALSE)
+
+# Batch-corrected version for visualization
+vsd_corrected <- vsd_original
+mat <- assay(vsd_original)
+mat_corrected <- removeBatchEffect(mat, 
+                                   batch=vsd_original$batch, 
+                                   design=model.matrix(~condition, colData(vsd_original)))
+assay(vsd_corrected) <- mat_corrected
+
+cat("\n### Analysis will proceed with", ncol(dds), "samples (GFP excluded) ###\n\n")
+```
+
+## Differential Expression Analysis with LFC Shrinkage
+
+```{r Helper functions}
+
+#Process all contrasts
+process_results <- function(res_unshrunk, res_shrunk, contrast_name) {
+  
+  # Convert unshrunk results to dataframe
+  df <- as.data.frame(res_unshrunk)
+  df$gene <- rownames(df)
+  
+  # Add shrunken LFC and SE
+  df$lfc_shrunk  <- res_shrunk$log2FoldChange
+  df$lfcSE_shrunk <- res_shrunk$lfcSE
+  
+  # Classify genes using:
+  # - UNSHRUNKEN LFC for biological threshold
+  # - UNSHRUNKEN padj for statistics
+  df <- df %>%
+    mutate(
+      diffexpressed = case_when(
+        log2FoldChange > 1 & padj < 0.05 ~ "UP",
+        log2FoldChange < -1 & padj < 0.05 ~ "DOWN",
+        TRUE ~ "NO"
+      ),
+      contrast = contrast_name
+    )
+  
+  return(df)
+}
+
+
+# MODIFIED Volcano plot function - marks PBX1 and TCF3 regardless of significance
+create_volcano <- function(df, contrast_name, n_label = 20) {
+  # Prepare labels for top genes
+  df$padj[df$padj == 0] <- 1e-300
+  df <- df[!is.na(df$padj) & !is.na(df$log2FoldChange), ]
+  
+  # Get top significant genes (these are actual top DEGs)
+  top_genes <- head(df[order(df$padj), "gene"], n_label)
+  
+  # Check if PBX1 and TCF3 exist in dataset and add them SEPARATELY for labeling
+  special_genes <- c("PBX1", "TCF3")
+  special_genes <- special_genes[special_genes %in% df$gene]
+  
+  # Combine top genes with special genes for labeling
+  genes_to_label <- unique(c(top_genes, special_genes))
+  
+  df$delabel <- ifelse(df$gene %in% genes_to_label, df$gene, NA)
+  
+  # Create a special category for PBX1 and TCF3 for highlighting
+  df$special_gene <- ifelse(df$gene %in% special_genes, df$gene, NA)
+  
+  p <- ggplot(df, aes(x = lfc_shrunk, y = -log10(padj), 
+                      col = diffexpressed, label = delabel)) +
+    geom_point(alpha = 0.5, size = 1.5) +
+    # Highlight PBX1 and TCF3 with larger purple diamond points
+    geom_point(data = df[!is.na(df$special_gene), ],
+               aes(x = lfc_shrunk, y = -log10(padj)),
+               color = "purple", size = 4, shape = 18) +
+    geom_text_repel(
+      data = df[!is.na(df$delabel), ],
+      aes(fontface = ifelse(!is.na(special_gene), "bold", "plain")),
+      color = "black",
+      max.overlaps = 50,
+      force = 1,
+      box.padding = 0.5,
+      point.padding = 0.5,
+      size = 3,
+      seed = 42
+    ) +
+    scale_color_manual(
+      values = c("DOWN" = "blue", "NO" = "grey", "UP" = "red"),
+      labels = c("Down-regulated", "Not significant", "Up-regulated")
+    ) +
+    labs(
+      title = paste("Differential Expression:", contrast_name, "(LFC Shrinkage Applied)"),
+      x = "Shrunken Log2 Fold Change",
+      y = "-Log10 Adjusted P-value",
+      caption = "LFC shrinkage: 'ashr' method"
+    ) +
+    geom_vline(xintercept = c(-1, 1), col = "black", linetype = "dashed") +
+    geom_hline(yintercept = -log10(0.05), col = "black", linetype = "dashed") +
+    theme_classic() +
+    theme(
+      axis.text = element_text(color = "black"),
+      panel.grid.minor = element_blank(),
+      legend.title = element_blank(),
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+      plot.caption = element_text(hjust = 1, face = "italic", size = 9)
+    )
+  
+  return(p)
+}
+
+#Raw MA plots (QC control)
+create_ma_plot_raw <- function(df, contrast_name) {
+  
+  df_filtered <- df[!is.na(df$padj) & !is.na(df$baseMean), ]
+  
+  p <- ggplot(df_filtered, aes(x = log10(baseMean + 1),
+                               y = log2FoldChange,
+                               col = diffexpressed)) +
+    geom_point(alpha = 0.5, size = 1) +
+    scale_color_manual(values = c("DOWN"="blue","NO"="grey","UP"="red")) +
+    geom_hline(yintercept = c(-1,1), linetype="dashed") +
+    geom_hline(yintercept = 0) +
+    labs(
+      title = paste("MA Plot (RAW LFC):", contrast_name),
+      x = "Log10 Mean Expression",
+      y = "Raw Log2 Fold Change",
+      caption = "Classical MA plot (no shrinkage)"
+    ) +
+    theme_classic()
+  
+  return(p)
+}
+
+#Shrunken MA plots for publications
+create_ma_plot_shrunk <- function(df, contrast_name) {
+  
+  df_filtered <- df[!is.na(df$padj) & !is.na(df$baseMean), ]
+  
+  p <- ggplot(df_filtered, aes(x = log10(baseMean + 1),
+                               y = lfc_shrunk,
+                               col = diffexpressed)) +
+    geom_point(alpha = 0.5, size = 1) +
+    scale_color_manual(values = c("DOWN"="blue","NO"="grey","UP"="red")) +
+    geom_hline(yintercept = c(-1,1), linetype="dashed") +
+    geom_hline(yintercept = 0) +
+    labs(
+      title = paste("MA Plot (Shrunken LFC):", contrast_name),
+      x = "Log10 Mean Expression",
+      y = "Shrunken Log2 Fold Change",
+      caption = "LFC shrinkage: ashr"
+    ) +
+    theme_classic()
+  
+  return(p)
+}
+
+```
+
+```{r Analysis - All Contrasts with LFC Shrinkage}
+
+contrasts_list <- list(
+"EP1_vs_REH" = c("condition", "EP1", "REH"),
+"Aro_vs_REH" = c("condition", "Aro", "REH"),
+"EP1_vs_Aro" = c("condition", "EP1", "Aro")
+)
+
+all_results <- list()
+
+cat("\n=== PERFORMING DESEQ2 WITH LFC SHRINKAGE ===\n")
+
+for (contrast_name in names(contrasts_list)) {
+  cat("Processing:", contrast_name, "\n")
+    
+  res_unshrunk <- results(dds, contrast = contrasts_list[[contrast_name]])
+  res_shrunk <- lfcShrink(dds, contrast = contrasts_list[[contrast_name]], type = "ashr")
+  
+  df <- process_results(res_unshrunk, res_shrunk, contrast_name)
+  all_results[[contrast_name]] <- df
+  
+  # Summary
+  cat("  Total DEGs:", sum(df$diffexpressed != "NO"), "\n")
+  cat("  Upregulated:", sum(df$diffexpressed == "UP"), "\n")
+  cat("  Downregulated:", sum(df$diffexpressed == "DOWN"), "\n")
+  
+  par(mfrow = c(1, 2))
+  
+  # Manual MA plot - Unshrunken
+  plot(log10(res_unshrunk$baseMean), 
+       res_unshrunk$log2FoldChange,
+       pch = 16, 
+       cex = 0.4,
+       col = ifelse(res_unshrunk$padj < 0.05 & !is.na(res_unshrunk$padj), "red", "gray60"),
+       main = paste(contrast_name, "- Unshrunken"),
+       xlab = "Log10 mean expression",
+       ylab = "Log2 fold change",
+       ylim = c(-5, 5))
+  abline(h = 0, col = "blue", lwd = 2)
+  
+  # Manual MA plot - Shrunken
+  plot(log10(res_shrunk$baseMean), 
+       res_shrunk$log2FoldChange,
+       pch = 16, 
+       cex = 0.4,
+       col = ifelse(res_shrunk$padj < 0.05 & !is.na(res_shrunk$padj), "red", "gray60"),
+       main = paste(contrast_name, "- Shrunken (ashr)"),
+       xlab = "Log10 mean expression",
+       ylab = "Log2 fold change",
+       ylim = c(-5, 5))
+  abline(h = 0, col = "blue", lwd = 2)
+  
+  par(mfrow = c(1, 1))
+}
+
+
+summary_deg <- data.frame(
+  Contrast = names(all_results),
+  Total_UP   = sapply(all_results, function(x) sum(x$diffexpressed == "UP")),
+  Total_DOWN = sapply(all_results, function(x) sum(x$diffexpressed == "DOWN")),
+  Total_DEG  = sapply(all_results, function(x) sum(x$diffexpressed != "NO"))
+)
+
+cat("\n=== SUMMARY OF DEGs ACROSS ALL CONTRASTS ===\n")
+print(summary_deg)
+
+```
+
+```{r Volcano and MA Plots}
+# Generate and save volcano and MA plots for each contrast
+for (contrast_name in names(all_results)) {
+  
+  df <- all_results[[contrast_name]]
+  
+  # Volcano
+  p1 <- create_volcano(df, contrast_name)
+  ggsave(file.path(contrasts_dir, paste0("Volcano_", contrast_name, ".pdf")), p1, width = 10, height = 8)
+  print(p1)
+  
+  # MA RAW
+  p_raw <- create_ma_plot_raw(df, contrast_name)
+  ggsave(file.path(contrasts_dir, paste0("MA_raw_", contrast_name, ".pdf")), p_raw, width = 8, height = 6)
+  print(p_raw)
+  
+  # MA SHRUNK
+  p_shrunk <- create_ma_plot_shrunk(df, contrast_name)
+  ggsave(file.path(contrasts_dir, paste0("MA_shrunk_", contrast_name, ".pdf")), p_shrunk, width = 8, height = 6)
+  print(p_shrunk)
+}
+```
+
+```{r Export DEGs to TSV}
+# Export DEGs for each contrast to Contrasts folder
+for (contrast_name in names(all_results)) {
+  cat("\n=== Exporting:", contrast_name, "===\n")
+  
+  df <- all_results[[contrast_name]]
+  
+  deg_df <- df %>%
+    filter(diffexpressed != "NO") %>%
+    select(
+      Gene = gene,
+      baseMean,
+      log2FoldChange,
+      lfc_shrunk,
+      stat,            
+      pvalue,          
+      padj,            
+      Regulation = diffexpressed
+    ) %>%
+    arrange(padj)
+  
+  deg_df <- deg_df %>%
+    mutate(
+      abs_log2FC = abs(log2FoldChange),
+      neg_log10_padj = -log10(padj)
+    )
+  
+  cat(paste("  Total DEGs exported:", nrow(deg_df), "\n"))
+  cat(paste("  Upregulated:", sum(deg_df$Regulation == "UP"), "\n"))
+  cat(paste("  Downregulated:", sum(deg_df$Regulation == "DOWN"), "\n"))
+  
+  filename_tsv <- file.path(contrasts_dir, paste0("DEGs_", contrast_name, ".tsv"))
+  write.table(deg_df, filename_tsv,
+              sep = "\t",
+              row.names = FALSE,
+              quote = FALSE)
+  
+  cat(paste("  Saved to:", filename_tsv, "\n"))
+}
+
+cat("\n=== All TSV files created successfully ===\n")
+cat("NOTE: lfc_shrunk values are SHRUNKEN log2FoldChange (ashr method)\n")
+cat("      p-values and padj are UNSHRUNKEN (from original Wald test)\n")
+```
+
+```{r Enrichment Analysis with enrichR, fig.width=10, fig.height=7}
+
+library(enrichR)
+
+websiteLive <- getOption("enrichR.live", TRUE)
+if (websiteLive) {
+  dbs_available <- listEnrichrDbs()
+}
+
+dbs <- c("GO_Biological_Process_2023",
+         "KEGG_2021_Human",
+         "WikiPathway_2023_Human",
+         "Reactome_2022",
+         "MSigDB_Hallmark_2020")
+
+# ============================================================================
+# HELPER: robust gene-list extractor
+# enrichR returns genes in the Genes column separated by ";" or "; " (with space)
+# depending on the database and package version. This handles both reliably.
+# ============================================================================
+extract_genes <- function(genes_string) {
+  # Split on semicolon (with or without surrounding spaces)
+  genes <- unlist(strsplit(genes_string, "\\s*;\\s*"))
+  # Remove any empty strings that could arise from trailing separators
+  genes <- genes[nchar(trimws(genes)) > 0]
+  trimws(genes)
+}
+
+# ============================================================================
+# HELPER: clean enrichR result table
+# Applies term-ID stripping (GO, Reactome, WikiPathway) uniformly and
+# computes gene_ratio. Works for any database.
+# ============================================================================
+process_enrichr_db <- function(db_result) {
+  df <- db_result %>%
+    separate(col = "Overlap", into = c("Gene_count", "total"), sep = "/",
+             convert = TRUE, extra = "drop", fill = "right")
+  df$gene_ratio <- df$Gene_count / df$total
+  # Strip embedded IDs from term names (present in GO, Reactome, WikiPathway)
+  df$Term <- gsub("\\s*\\(GO:\\d+\\)", "",   df$Term)
+  df$Term <- gsub("\\s*R-HSA-[0-9.]+",  "",  df$Term)
+  df$Term <- gsub("\\s*WP\\d+",         "",  df$Term)
+  df$Term <- trimws(df$Term)
+  df
+}
+
+# ============================================================================
+# HELPER: save gene lists + summary TSV for one direction x database x contrast
+# ============================================================================
+save_enrichr_genelists <- function(sig_terms, prefix, out_dir) {
+  # One summary TSV with all significant terms
+  sig_out <- sig_terms %>%
+    select(Term, Gene_count, total, gene_ratio, P.value, Adjusted.P.value, Genes) %>%
+    arrange(Adjusted.P.value)
+  write.table(sig_out,
+              file.path(out_dir, paste0(prefix, "_enrichment.tsv")),
+              sep = "\t", row.names = FALSE, quote = FALSE)
+}
+
+# ============================================================================
+# HELPER: bubble plot for enrichR results
+# ============================================================================
+plot_enrichr <- function(sig_terms, title_str, xlab_str) {
+  plot_data <- head(sig_terms, 20)
+  ggplot(plot_data, aes(x = Term, y = -log10(Adjusted.P.value))) +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "azure4", size = 0.5) +
+    geom_point(aes(size = Gene_count, colour = gene_ratio), alpha = 0.7) +
+    scale_x_discrete(limits = rev(plot_data$Term)) +
+    scale_color_gradient(low = "green", high = "red", limits = c(0, NA)) +
+    coord_flip() +
+    theme_bw() +
+    theme(axis.ticks.length    = unit(-0.1, "cm"),
+          axis.text.x          = element_text(margin = margin(5, 5, 0, 5, "pt")),
+          axis.text.y          = element_text(margin = margin(5, 5, 5, 5, "pt")),
+          axis.text            = element_text(color = "black"),
+          panel.grid.minor     = element_blank(),
+          legend.title.align   = 0.5,
+          plot.title           = element_text(hjust = 0.5, color = "black",
+                                              face = "bold", size = 14)) +
+    xlab(xlab_str) +
+    ylab("-log10(Adjusted P-value)") +
+    labs(color = "Gene Ratio", size = "Number\nof genes") +
+    ggtitle(title_str)
+}
+
+# ============================================================================
+# MAIN LOOP
+# ============================================================================
+all_enrichr_results <- list()
+
+for (contrast_name in names(all_results)) {
+  
+  cat("\n=== Processing enrichR for:", contrast_name, "===\n")
+  
+  df       <- all_results[[contrast_name]]
+  dge_up   <- subset(df, diffexpressed == "UP")
+  dge_down <- subset(df, diffexpressed == "DOWN")
+  cat("UP genes:", nrow(dge_up), "| DOWN genes:", nrow(dge_down), "\n")
+  
+  for (direction in c("UP", "DOWN")) {
+    
+    dge_set <- if (direction == "UP") dge_up else dge_down
+    if (nrow(dge_set) == 0 || !websiteLive) next
+    
+    enriched <- enrichr(as.vector(dge_set$gene), dbs)
+    all_enrichr_results[[paste0(contrast_name, "_", direction)]] <- enriched
+    
+    for (db_idx in seq_along(dbs)) {
+      db_name <- dbs[db_idx]
+      
+      if (is.null(enriched[[db_idx]]) || nrow(enriched[[db_idx]]) == 0) next
+      
+      # Process: clean terms + compute gene_ratio
+      enriched_processed <- process_enrichr_db(enriched[[db_idx]])
+      sig_terms <- subset(enriched_processed, Adjusted.P.value < 0.05)
+      
+      if (nrow(sig_terms) == 0) {
+        cat("  No significant results for", db_name, direction, "\n")
+        next
+      }
+      
+      # File prefix: <contrast>_<direction>_<db>
+      file_prefix <- paste0(contrast_name, "_", direction, "_", db_name)
+      
+      # Save gene lists + summary TSV
+      save_enrichr_genelists(sig_terms, file_prefix, contrasts_genelists_dir)
+      
+      # Plot + save
+      p <- plot_enrichr(
+        sig_terms,
+        title_str = paste(db_name, "-", contrast_name, paste0("(", direction, ")")),
+        xlab_str  = paste(db_name, "Terms", paste0("(", direction, ")"))
+      )
+      print(p)
+      ggsave(
+        file.path(contrasts_dir,
+                  paste0("enrichR_", db_name, "_", direction, "_", contrast_name, ".pdf")),
+        p, width = 10, height = 7
+      )
+      cat("  Plot + gene lists saved for", db_name, direction, "\n")
+    }
+  }
+}
+
+cat("\n=== enrichR analysis completed for all contrasts ===\n")
+```
+
+```{r Top DEGs Tables}
+# Display top 20 DEGs for each contrast
+for (contrast_name in names(all_results)) {
+  cat("\n### Top 20 DEGs:", contrast_name, "\n")
+  
+  df <- all_results[[contrast_name]]
+  top_deg <- df %>%
+    filter(diffexpressed != "NO") %>%
+    arrange(padj) %>%
+    select(gene, baseMean, log2FoldChange, lfc_shrunk, padj, diffexpressed) %>%
+    head(20)
+  
+  print(knitr::kable(top_deg, digits = 3))
+  cat("\n\n")
+}
+```
+
+```{r Clustering exploration}
+
+# Collect all unique DEGs across all contrasts
+all_deg_genes <- unique(unlist(lapply(all_results, function(df) {
+  df %>%
+    filter(diffexpressed != "NO") %>%
+    pull(gene)
+})))
+
+cat(paste("Total unique DEGs across all contrasts:", length(all_deg_genes), "\n\n"))
+
+# Extract VST-transformed values for all DEGs (batch-corrected)
+mat_all_deg <- assay(vsd_corrected)[all_deg_genes, , drop = FALSE]
+
+# Z-score normalization
+mat_all_deg_scaled <- t(scale(t(mat_all_deg)))
+
+# Remove any rows with NA or Inf values
+valid_rows <- complete.cases(mat_all_deg_scaled) &
+              !apply(mat_all_deg_scaled, 1, function(x) any(is.infinite(x)))
+mat_all_deg_scaled <- mat_all_deg_scaled[valid_rows, ]
+
+cat(paste("Genes used for clustering:", nrow(mat_all_deg_scaled), "\n\n"))
+```
+
+```{r Kmeans heatmap per samples}
+cat("\n=== Creating DEG Heatmap: K-means clustering ===\n\n")
+
+# MANUAL OVERRIDE
+optimal_k <- 8
+set.seed(42)
+
+# K-means clustering
+km_result <- kmeans(mat_all_deg_scaled, centers = optimal_k, nstart = 25, iter.max = 100)
+clusters <- km_result$cluster
+
+# Calculate mean expression per cluster per condition
+ep1_samples <- rownames(coldata)[coldata$condition == "EP1"]
+aro_samples <- rownames(coldata)[coldata$condition == "Aro"]
+reh_samples <- rownames(coldata)[coldata$condition == "REH"]
+
+cluster_stats <- data.frame(
+  Cluster = 1:optimal_k,
+  Mean_EP1 = NA,
+  Mean_Aro = NA,
+  Mean_REH = NA,
+  N_genes = NA
+)
+for (k in 1:optimal_k) {
+  genes_in_cluster <- names(clusters)[clusters == k]
+  cluster_stats$N_genes[k] <- length(genes_in_cluster)
+  cluster_stats$Mean_EP1[k] <- mean(mat_all_deg_scaled[genes_in_cluster, ep1_samples], na.rm = TRUE)
+  cluster_stats$Mean_Aro[k] <- mean(mat_all_deg_scaled[genes_in_cluster, aro_samples], na.rm = TRUE)
+  cluster_stats$Mean_REH[k] <- mean(mat_all_deg_scaled[genes_in_cluster, reh_samples], na.rm = TRUE)
+}
+
+cluster_order <- order(cluster_stats$Mean_REH)
+col_order <- c(reh_samples, ep1_samples, aro_samples)
+mat_reordered <- mat_all_deg_scaled[, col_order]
+
+genes_ordered <- unlist(lapply(cluster_order, function(k) {
+  genes <- names(clusters)[clusters == k]
+  ep1_vs_reh <- rowMeans(mat_reordered[genes, ep1_samples, drop = FALSE]) -
+                rowMeans(mat_reordered[genes, reh_samples, drop = FALSE])
+  genes[order(ep1_vs_reh)]
+}))
+
+mat_final <- mat_reordered[genes_ordered, ]
+
+# Annotations
+ann_col <- data.frame(
+  condition = sapply(colnames(mat_final), function(x) {
+    if (x %in% ep1_samples) return("EP1")
+    else if (x %in% aro_samples) return("Aro")
+    else if (x %in% reh_samples) return("REH")
+    else return("Unknown")
+  }),
+  row.names = colnames(mat_final)
+)
+
+ann_row <- data.frame(
+  cluster = factor(clusters[genes_ordered], levels = cluster_order),
+  row.names = genes_ordered
+)
+
+ann_colors <- list(
+  condition = c(EP1 = "#E41A1C", Aro = "#377EB8", REH = "#4DAF4A"),
+  cluster = setNames(
+    colorRampPalette(brewer.pal(min(12, optimal_k), "Set3"))(optimal_k),
+    as.character(cluster_order)
+  )
+)
+
+# Generate and save heatmap
+pdf(file.path(clusters_dir, paste0("kmeans_heatmap_k", optimal_k, ".pdf")), width = 10, height = 14)
+pheatmap(
+  mat_final,
+  annotation_col = ann_col,
+  annotation_row = ann_row,
+  annotation_colors = ann_colors,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  show_rownames = FALSE,
+  show_colnames = TRUE,
+  border_color = NA,
+  gaps_row = cumsum(table(clusters[genes_ordered])[as.character(cluster_order)]),
+  gaps_col = c(3, 6),
+  color = colorRampPalette(rev(brewer.pal(9, "RdBu")))(255),
+  fontsize_col = 10,
+  main = paste0("All DEGs - K-means (k=", optimal_k, " clusters)")
+)
+dev.off()
+
+# Also render inline
+pheatmap(
+  mat_final,
+  annotation_col = ann_col,
+  annotation_row = ann_row,
+  annotation_colors = ann_colors,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  show_rownames = FALSE,
+  show_colnames = TRUE,
+  border_color = NA,
+  gaps_row = cumsum(table(clusters[genes_ordered])[as.character(cluster_order)]),
+  gaps_col = c(3, 6),
+  color = colorRampPalette(rev(brewer.pal(9, "RdBu")))(255),
+  fontsize_col = 10,
+  main = paste0("All DEGs - K-means (k=", optimal_k, " clusters)")
+)
+
+# Export cluster gene membership TSV
+cluster_membership_df <- data.frame(
+  Gene    = names(clusters),
+  Cluster = clusters
+) %>% arrange(Cluster)
+
+write.table(
+  cluster_membership_df,
+  file.path(clusters_dir, "kmeans_cluster_gene_membership.tsv"),
+  sep = "\t", row.names = FALSE, quote = FALSE
+)
+cat("Cluster gene membership saved to Clusters/kmeans_cluster_gene_membership.tsv\n")
+```
+
+```{r Cluster enrichment}
+# Create cluster_gene_lists from clustering results
+cluster_gene_lists <- list()
+for (k in 1:optimal_k) {
+  cluster_gene_lists[[as.character(k)]] <- names(clusters)[clusters == k]
+}
+names(cluster_gene_lists) <- as.character(1:length(cluster_gene_lists))
+
+all_cluster_enrichr_results <- list()
+
+for (cluster_name in names(cluster_gene_lists)) {
+  
+  gene_set <- cluster_gene_lists[[cluster_name]]
+  
+  cat("\n=== Processing enrichR for:", cluster_name, "===\n")
+  cat("Number of genes:", length(gene_set), "\n")
+  
+  if (length(gene_set) > 0 && websiteLive) {
+    
+    enriched_cluster <- enrichr(gene_set, dbs)
+    all_cluster_enrichr_results[[cluster_name]] <- enriched_cluster
+    
+    for (db_idx in seq_along(dbs)) {
+      db_name <- dbs[db_idx]
+      
+      if (!is.null(enriched_cluster[[db_idx]]) && nrow(enriched_cluster[[db_idx]]) > 0) {
+        
+        # Use shared helper: cleans terms + computes gene_ratio uniformly for all DBs
+        enriched_processed <- process_enrichr_db(enriched_cluster[[db_idx]])
+        
+        sig_terms <- subset(enriched_processed, Adjusted.P.value < 0.05)
+        if (nrow(sig_terms) > 0) {
+          
+          # Save gene lists + summary TSV using shared helper (handles ";" and "; " separators)
+          file_prefix <- paste0("Cluster", cluster_name, "_", db_name)
+          save_enrichr_genelists(sig_terms, file_prefix, clusters_genelists_dir)
+          
+          p <- plot_enrichr(
+            sig_terms,
+            title_str = paste(db_name, "- Cluster", cluster_name),
+            xlab_str  = paste(db_name, "Terms ( Cluster", cluster_name, ")")
+          )
+          print(p)
+          ggsave(
+            file.path(clusters_dir, paste0("enrichR_", db_name, "_Cluster", cluster_name, ".pdf")),
+            p, width = 10, height = 7
+          )
+          cat("  Plot + gene lists saved for", db_name, "Cluster", cluster_name, "\n")
+        } else {
+          cat("  No significant results for", db_name, cluster_name, "\n")
+        }
+      }
+    }
+  }
+}
+```
+
+```{r ChIP-seq Peak to TSS Distance Analysis}
+cat("\n=== ChIP-SEQ PEAK TO TSS DISTANCE ANALYSIS ===\n\n")
+
+library(GenomicRanges)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(org.Hs.eg.db)
+
+# chip_path <- "/mnt/beegfs/xvilchez/chip_publicdata/697HF_E2APBX1-HF_peaks.bed"
+chip_path <- "R:/R_STIK/chip_seq/Xavi_TFM/697HF_E2APBX1-HF_peaks.bed"
+
+if (!file.exists(chip_path)) {
+  stop("ChIP-seq peak file not found at: ", chip_path)
+}
+
+peaks_df <- read.table(chip_path, header = FALSE, stringsAsFactors = FALSE)
+colnames(peaks_df)[1:3] <- c("chr", "start", "end")
+
+peaks_gr <- GRanges(
+  seqnames = peaks_df$chr,
+  ranges = IRanges(start = peaks_df$start, end = peaks_df$end)
+)
+
+cat(paste0("Loaded ", length(peaks_gr), " ChIP-seq peaks\n"))
+
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+genes_gr <- genes(txdb)
+
+gene_symbols <- mapIds(
+  org.Hs.eg.db,
+  keys = names(genes_gr),
+  column = "SYMBOL",
+  keytype = "ENTREZID",
+  multiVals = "first"
+)
+
+genes_gr$symbol <- gene_symbols[names(genes_gr)]
+genes_gr <- genes_gr[!is.na(genes_gr$symbol)]
+
+cat(paste0("Loaded ", length(genes_gr), " genes with TSS coordinates\n\n"))
+
+get_tss <- function(gr) {
+  tss <- gr
+  strand_vec <- as.character(strand(gr))
+  plus_strand  <- strand_vec == "+"
+  minus_strand <- strand_vec == "-"
+  start(tss)[plus_strand]  <- start(gr)[plus_strand]
+  end(tss)[plus_strand]    <- start(gr)[plus_strand]
+  start(tss)[minus_strand] <- end(gr)[minus_strand]
+  end(tss)[minus_strand]   <- end(gr)[minus_strand]
+  return(tss)
+}
+
+tss_gr <- get_tss(genes_gr)
+
+max_distance <- 1e6
+
+cluster_peak_analysis <- list()
+
+for (k in 1:optimal_k) {
+  cat(paste0("=== Analyzing Cluster ", k, " ===\n"))
+  cluster_genes <- names(clusters)[clusters == k]
+  cluster_tss   <- tss_gr[tss_gr$symbol %in% cluster_genes]
+  cat(paste0("  Cluster has ", length(cluster_genes), " genes\n"))
+  cat(paste0("  ", length(cluster_tss), " genes with TSS coordinates\n"))
+  
+  nearest_peaks   <- distanceToNearest(cluster_tss, peaks_gr, ignore.strand = TRUE)
+  distances       <- mcols(nearest_peaks)$distance
+  within_threshold <- distances <= max_distance
+  
+  n_genes_total   <- length(cluster_tss)
+  n_genes_with_peak <- sum(within_threshold)
+  pct_with_peak   <- (n_genes_with_peak / n_genes_total) * 100
+  avg_distance    <- mean(distances[within_threshold])
+  median_distance <- median(distances[within_threshold])
+  
+  cluster_peak_analysis[[k]] <- list(
+    cluster = k,
+    n_genes_total = n_genes_total,
+    n_genes_with_peak = n_genes_with_peak,
+    pct_with_peak = pct_with_peak,
+    avg_distance = avg_distance,
+    median_distance = median_distance,
+    distances = distances[within_threshold],
+    all_distances = distances
+  )
+  
+  cat(paste0("  Genes with peak within 1 Mb: ", n_genes_with_peak, 
+             " (", round(pct_with_peak, 2), "%)\n"))
+  cat(paste0("  Average distance: ", round(avg_distance, 2), " bp\n"))
+  cat(paste0("  Median distance: ", round(median_distance, 2), " bp\n\n"))
+}
+
+summary_peak_table <- data.frame(
+  Cluster = 1:optimal_k,
+  N_Genes = sapply(cluster_peak_analysis, function(x) x$n_genes_total),
+  N_With_Peak = sapply(cluster_peak_analysis, function(x) x$n_genes_with_peak),
+  Percent_With_Peak = sapply(cluster_peak_analysis, function(x) round(x$pct_with_peak, 2)),
+  Avg_Distance_bp = sapply(cluster_peak_analysis, function(x) round(x$avg_distance, 2)),
+  Median_Distance_bp = sapply(cluster_peak_analysis, function(x) round(x$median_distance, 2))
+)
+
+cat("\n=== SUMMARY TABLE ===\n")
+print(summary_peak_table)
+
+write.table(
+  summary_peak_table,
+  file.path(clusters_dir, "ChIP_peak_TSS_analysis_summary.tsv"),
+  sep = "\t", row.names = FALSE, quote = FALSE
+)
+cat("ChIP peak TSS analysis summary saved to Clusters/\n")
+
+# Statistical tests
+cat("\n=== STATISTICAL TESTS ===\n\n")
+contingency_table <- matrix(
+  c(summary_peak_table$N_With_Peak, 
+    summary_peak_table$N_Genes - summary_peak_table$N_With_Peak),
+  nrow = optimal_k
+)
+chi_test <- chisq.test(contingency_table)
+cat("Chi-square test for differences in peak association across clusters:\n")
+print(chi_test)
+
+all_distances_list <- lapply(cluster_peak_analysis, function(x) x$distances)
+names(all_distances_list) <- paste0("Cluster_", 1:optimal_k)
+
+distance_df <- data.frame(
+  distance = unlist(all_distances_list),
+  cluster  = factor(rep(names(all_distances_list), sapply(all_distances_list, length)))
+)
+
+kw_test <- kruskal.test(distance ~ cluster, data = distance_df)
+cat("Kruskal-Wallis test for differences in peak-TSS distances:\n")
+print(kw_test)
+
+if (kw_test$p.value < 0.05) {
+  cat("Performing pairwise Wilcoxon tests (Bonferroni correction):\n")
+  pairwise_test <- pairwise.wilcox.test(
+    distance_df$distance, distance_df$cluster, p.adjust.method = "bonferroni"
+  )
+  print(pairwise_test)
+}
+
+# Plots saved to Clusters/
+p_bar <- ggplot(summary_peak_table, 
+                aes(x = factor(Cluster), y = Percent_With_Peak, fill = factor(Cluster))) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(round(Percent_With_Peak, 1), "%")), vjust = -0.5, size = 4) +
+  scale_fill_brewer(palette = "Set3") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(title = "Percentage of Genes with E2A-PBX1 Peaks within 1 Mb of TSS",
+       x = "Cluster", y = "Percentage of Genes (%)")
+print(p_bar)
+ggsave(file.path(clusters_dir, "ChIP_pct_genes_with_peak.pdf"), p_bar, width = 8, height = 6)
+
+library(ggpubr)
+p_box <- ggplot(distance_df, aes(x = cluster, y = distance/1000, fill = cluster)) +
+  geom_boxplot(outlier.size = 0.5) +
+  scale_fill_brewer(palette = "Set3") +
+  theme_bw() +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Distribution of Peak-TSS Distances by Cluster",
+       subtitle = "Only genes with peaks within 1 Mb",
+       x = "Cluster", y = "Distance to Nearest Peak (kb)") +
+  stat_compare_means(method = "kruskal.test", label.y = max(distance_df$distance/1000) * 0.95)
+print(p_box)
+ggsave(file.path(clusters_dir, "ChIP_peak_TSS_distance_boxplot.pdf"), p_box, width = 8, height = 6)
+
+p_violin <- ggplot(distance_df, aes(x = cluster, y = distance/1000, fill = cluster)) +
+  geom_violin(alpha = 0.6, trim = FALSE) +
+  geom_boxplot(width = 0.15, outlier.shape = NA, alpha = 0.8) +
+  scale_fill_brewer(palette = "Set3") +
+  theme_bw() +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Peak-TSS Distance Distribution by Cluster",
+       x = "Cluster", y = "Distance to Nearest Peak (kb)")
+print(p_violin)
+ggsave(file.path(clusters_dir, "ChIP_peak_TSS_distance_violin.pdf"), p_violin, width = 8, height = 6)
+
+cat("\n=== CHIP ANALYSIS COMPLETE — plots saved to Clusters/ ===\n")
+```
+
+```{r HOMER Motif Analysis Preparation}
+cat("\n=== PREPARING DATA FOR HOMER MOTIF ANALYSIS ===\n\n")
+
+library(GenomicRanges)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+
+# Use the structured sub-folder defined at the top
+homer_dir <- homer_promoter_dir
+
+promoter_upstream   <- 2000
+promoter_downstream <- 500
+
+cat(paste0("Promoter regions: -", promoter_upstream, " to +", promoter_downstream, " bp from TSS\n"))
+cat(paste0("Output directory: ", homer_dir, "\n\n"))
+
+cat("=== Exporting Cluster Promoters ===\n")
+
+for (k in 1:optimal_k) {
+  cluster_genes      <- names(clusters)[clusters == k]
+  cluster_gene_gr    <- genes_gr[genes_gr$symbol %in% cluster_genes]
+  cluster_promoters  <- promoters(cluster_gene_gr, upstream = promoter_upstream,
+                                  downstream = promoter_downstream)
+  
+  promoter_df <- data.frame(
+    chr    = as.character(seqnames(cluster_promoters)),
+    start  = start(cluster_promoters),
+    end    = end(cluster_promoters),
+    name   = cluster_promoters$symbol,
+    score  = 0,
+    strand = as.character(strand(cluster_promoters))
+  )
+  promoter_df <- promoter_df[complete.cases(promoter_df), ]
+  
+  bed_file <- file.path(homer_dir, paste0("cluster_", k, "_promoters.bed"))
+  write.table(promoter_df, bed_file, sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+  cat(paste0("Cluster ", k, ": ", nrow(promoter_df), " promoters -> ", basename(bed_file), "\n"))
+}
+
+# Background: all DEGs
+cat("\n=== Background: All DEGs ===\n")
+all_deg_genes_bg  <- rownames(mat_all_deg_scaled)
+background_gene_gr <- genes_gr[genes_gr$symbol %in% all_deg_genes_bg]
+background_promoters <- promoters(background_gene_gr, upstream = promoter_upstream,
+                                   downstream = promoter_downstream)
+background_deg_df <- data.frame(
+  chr    = as.character(seqnames(background_promoters)),
+  start  = start(background_promoters),
+  end    = end(background_promoters),
+  name   = background_promoters$symbol,
+  score  = 0,
+  strand = as.character(strand(background_promoters))
+)
+background_deg_df <- background_deg_df[complete.cases(background_deg_df), ]
+background_deg_file <- file.path(homer_dir, "background_all_DEGs.bed")
+write.table(background_deg_df, background_deg_file, sep = "\t", quote = FALSE,
+            row.names = FALSE, col.names = FALSE)
+cat(paste0("  ", nrow(background_deg_df), " promoters -> background_all_DEGs.bed\n"))
+
+cat("\nHOMER BED files ready in: ", homer_dir, "\n")
+```
+
+```{r HOMER Visualizations, fig.width=12, fig.height=10}
+
+library(dplyr)
+library(readr)
+
+homer_results_list <- list()
+
+for (k in 1:optimal_k) {
+  file_path <- file.path(homer_dir, paste0("cluster_", k, "_DEGbg/knownResults.txt"))
+  if (file.exists(file_path)) {
+    df <- read_tsv(file_path, comment = "#")
+    df$Cluster <- k
+    homer_results_list[[k]] <- df
+  }
+}
+
+homer_combined <- bind_rows(homer_results_list)
+
+homer_combined <- homer_combined %>%
+  mutate(Motif_Clean = gsub("\\(.*", "", `Motif Name`)) %>%
+  mutate(Motif_Clean = trimws(Motif_Clean))
+
+homer_combined <- homer_combined %>%
+  rename(Percent_Target = `...6`)
+homer_combined$Percent_Target <- as.numeric(gsub("%", "", homer_combined$Percent_Target))
+
+cat("\n=== HOMER PROMOTER MOTIF VISUALIZATIONS ===\n\n")
+
+# 1. Heatmap
+significant_motifs <- homer_combined %>%
+  filter(`P-value` < 0.05) %>%
+  group_by(Motif_Clean) %>%
+  summarise(min_pval = min(`P-value`), n_clusters_sig = n(), .groups = "drop") %>%
+  arrange(min_pval) %>%
+  head(40) %>%
+  pull(Motif_Clean)
+
+if (length(significant_motifs) > 0) {
+  motif_matrix_improved <- homer_combined %>%
+    filter(Motif_Clean %in% significant_motifs) %>%
+    group_by(Motif_Clean, Cluster) %>%
+    slice_min(`P-value`, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    mutate(neg_log_p = pmin(-log10(`P-value`), 50)) %>%
+    select(Motif_Clean, Cluster, neg_log_p) %>%
+    pivot_wider(names_from = Cluster, values_from = neg_log_p, values_fill = 0)
+  
+  motif_matrix_df <- as.data.frame(motif_matrix_improved)
+  rownames(motif_matrix_df) <- motif_matrix_df$Motif_Clean
+  motif_matrix_df$Motif_Clean <- NULL
+  motif_matrix_final <- as.matrix(motif_matrix_df)
+  motif_matrix_final <- motif_matrix_final[, order(as.numeric(colnames(motif_matrix_final)))]
+  
+  pdf(file.path(homer_promoter_dir, "motif_heatmap_promoters.pdf"), width = 12, height = 14)
+  pheatmap(motif_matrix_final, cluster_rows = TRUE, cluster_cols = FALSE,
+    color = colorRampPalette(c("white","yellow","orange","red","darkred"))(100),
+    main = "Top Enriched Motifs Across Clusters\n(-log10 P-value, only p<0.05)",
+    display_numbers = FALSE, fontsize_row = 7, fontsize_col = 11,
+    angle_col = 0, border_color = "grey90", cellwidth = 35, cellheight = 10,
+    breaks = seq(0, max(motif_matrix_final), length.out = 101))
+  dev.off()
+  pheatmap(motif_matrix_final, cluster_rows = TRUE, cluster_cols = FALSE,
+    color = colorRampPalette(c("white","yellow","orange","red","darkred"))(100),
+    main = "Top Enriched Motifs Across Clusters\n(-log10 P-value, only p<0.05)",
+    display_numbers = FALSE, fontsize_row = 7, fontsize_col = 11,
+    angle_col = 0, border_color = "grey90", cellwidth = 35, cellheight = 10,
+    breaks = seq(0, max(motif_matrix_final), length.out = 101))
+}
+
+# 2. Dot plot
+top_motifs_per_cluster <- homer_combined %>%
+  group_by(Cluster) %>% arrange(`P-value`) %>% slice_head(n = 10) %>% ungroup() %>%
+  group_by(Motif_Clean, Cluster) %>% slice_min(`P-value`, n = 1, with_ties = FALSE) %>% ungroup()
+
+p_dot <- ggplot(top_motifs_per_cluster, aes(x = factor(Cluster), y = Motif_Clean)) +
+  geom_point(aes(size = -log10(`P-value`), color = -log10(`P-value`),
+                 alpha = ifelse(`P-value` < 0.05, 1, 0.3))) +
+  scale_size_continuous(range = c(1, 10), name = "-log10(P-value)") +
+  scale_color_gradient(low = "lightblue", high = "darkred", name = "-log10(P-value)") +
+  scale_alpha_identity() +
+  theme_bw() +
+  labs(title = "Top 10 Motifs Per Cluster (Dot Plot)", x = "Cluster", y = "Motif")
+print(p_dot)
+ggsave(file.path(homer_promoter_dir, "motif_dotplot_promoters.pdf"), p_dot, width = 12, height = 10)
+
+# 3. Cluster enrichment summary bar
+cluster_enrichment_stats <- homer_combined %>%
+  group_by(Cluster) %>%
+  summarise(n_significant = sum(`P-value` < 0.05), n_very_significant = sum(`P-value` < 0.001),
+            median_pval = median(`P-value`), min_pval = min(`P-value`), .groups = "drop") %>%
+  arrange(desc(n_significant))
+print(cluster_enrichment_stats)
+
+p_cluster_summary <- ggplot(cluster_enrichment_stats, aes(x = factor(Cluster), y = n_significant, fill = factor(Cluster))) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = n_significant), vjust = -0.5, size = 5, fontface = "bold") +
+  scale_fill_brewer(palette = "Set3") + theme_bw() + theme(legend.position = "none") +
+  labs(title = "Number of Significantly Enriched Motifs per Cluster",
+       subtitle = "Count of motifs with p < 0.05", x = "Cluster", y = "Number of Significant Motifs")
+print(p_cluster_summary)
+ggsave(file.path(homer_promoter_dir, "motif_sig_count_per_cluster_promoters.pdf"), p_cluster_summary, width = 8, height = 6)
+```
+
+```{r TF-family-plots promoters, fig.width=10, fig.height=6}
+tf_families <- list(
+  "E2A/TCF" = c("E2A","TCF","E47","E12"),
+  "PBX"     = c("PBX1","PBX2","PBX3","PBX"),
+  "HOX"     = c("HOXA","HOXB","HOXC","HOXD","HOX"),
+  "MEIS"    = c("MEIS1","MEIS2","MEIS"),
+  "RUNX"    = c("RUNX","AML"),
+  "MYC"     = c("MYC","MYCN","MAX")
+)
+
+tf_family_enrichment <- list()
+for (family_name in names(tf_families)) {
+  patterns <- tf_families[[family_name]]
+  family_results <- homer_combined %>%
+    filter(grepl(paste(patterns, collapse = "|"), Motif_Clean, ignore.case = TRUE)) %>%
+    group_by(Cluster, Motif_Clean) %>% slice_min(`P-value`, n = 1, with_ties = FALSE) %>% ungroup() %>%
+    mutate(TF_Family = family_name, neg_log_p = -log10(`P-value`))
+  tf_family_enrichment[[family_name]] <- family_results
+}
+tf_family_combined <- bind_rows(tf_family_enrichment)
+
+tf_heatmap_plot <- NULL
+tf_dot_plot <- NULL
+
+if (nrow(tf_family_combined) > 0) {
+
+  # Create summary matrix for heatmap
+tf_summary <- tf_family_combined %>%
+  group_by(TF_Family, Cluster) %>%
+  summarise(max_neg_log_p = max(neg_log_p), .groups = "drop")
+
+tf_summary_matrix <- tf_summary %>%
+  pivot_wider(names_from = Cluster,
+              values_from = max_neg_log_p,
+              values_fill = 0) %>%
+  column_to_rownames("TF_Family") %>%
+  as.matrix()
+
+  # Save heatmap
+  pheatmap(tf_summary_matrix,
+           cluster_rows = FALSE, cluster_cols = FALSE,
+           color = colorRampPalette(c("white","pink","red","darkred"))(100),
+           main = "TF Family Enrichment Across Clusters\n(Max -log10 P-value per family)",
+           display_numbers = TRUE, number_format = "%.1f",
+           fontsize = 11, angle_col = 0,
+           cellwidth = 40, cellheight = 30,
+           filename = file.path(homer_promoter_dir, "TF_family_heatmap_promoters.pdf"),
+           width = 10, height = 6)
+
+  # Create heatmap object for display
+  tf_heatmap_plot <- pheatmap(tf_summary_matrix,
+                              cluster_rows = FALSE, cluster_cols = FALSE,
+                              color = colorRampPalette(c("white","pink","red","darkred"))(100),
+                              main = "TF Family Enrichment Across Clusters\n(Max -log10 P-value per family)",
+                              display_numbers = TRUE, number_format = "%.1f",
+                              fontsize = 11, angle_col = 0,
+                              cellwidth = 40, cellheight = 30)
+
+  tf_sig <- tf_family_combined %>% filter(`P-value` < 0.05)
+
+  if (nrow(tf_sig) > 0) {
+
+    tf_dot_plot <- ggplot(tf_sig,
+                          aes(x = factor(Cluster), y = TF_Family)) +
+      geom_point(aes(size = neg_log_p, color = neg_log_p)) +
+      scale_size_continuous(range = c(2, 12)) +
+      scale_color_gradient(low = "lightblue", high = "darkred") +
+      theme_bw() +
+      labs(title = "TF Family Enrichment by Cluster",
+           subtitle = "Only showing p < 0.05",
+           x = "Cluster", y = "TF Family")
+
+    ggsave(file.path(homer_promoter_dir,
+                     "TF_family_dotplot_promoters.pdf"),
+           tf_dot_plot, width = 8, height = 6)
+  }
+}
+
+# ---- PRINT OUTSIDE IF BLOCK ----
+
+if (!is.null(tf_heatmap_plot)) tf_heatmap_plot
+if (!is.null(tf_dot_plot)) print(tf_dot_plot)
+
+cat("\n=== HOMER PROMOTER VISUALIZATIONS COMPLETE — saved to Clusters/homer_promoter_motifs/ ===\n")
+```
+
+```{r HOMER Motif Analysis on ChIP Peaks Near Cluster TSS, fig.width=10, fig.height=8}
+
+cat("\n=== HOMER MOTIF ANALYSIS: ChIP PEAKS NEAR CLUSTER TSS ===\n\n")
+
+library(GenomicRanges)
+
+# Use the structured sub-folder defined at the top
+homer_peaks_dir <- homer_chip_dir
+
+max_distance <- 1e6
+
+cat(paste0("Distance threshold: ", format(max_distance, big.mark = ","), " bp\n"))
+cat(paste0("Output directory: ", homer_peaks_dir, "\n\n"))
+
+# STEP 1: Extract peaks near TSS for each cluster
+cat("=== STEP 1: Extracting cluster-specific ChIP peaks ===\n\n")
+
+cluster_peak_indices <- list()
+
+for (k in 1:optimal_k) {
+  cat(paste0("Processing Cluster ", k, "...\n"))
+  cluster_genes <- names(clusters)[clusters == k]
+  cluster_tss   <- tss_gr[tss_gr$symbol %in% cluster_genes]
+  
+  cat(paste0("  Genes in cluster: ", length(cluster_genes), "\n"))
+  cat(paste0("  Genes with TSS:   ", length(cluster_tss), "\n"))
+  
+  hits              <- distanceToNearest(cluster_tss, peaks_gr, ignore.strand = TRUE)
+  within_threshold  <- mcols(hits)$distance <= max_distance
+  hits_filtered     <- hits[within_threshold]
+  near_peak_idx     <- unique(subjectHits(hits_filtered))
+  cluster_peak_indices[[k]] <- near_peak_idx
+  
+  cat(paste0("  TSS within ", format(max_distance, big.mark=","), " bp of a peak: ",
+             sum(within_threshold), "\n"))
+  cat(paste0("  Unique peaks selected: ", length(near_peak_idx), "\n\n"))
+}
+
+# STEP 2: Write per-cluster peak BED files
+cat("=== STEP 2: Writing cluster peak BED files ===\n\n")
+
+peaks_to_bed <- function(gr) {
+  data.frame(chr = as.character(seqnames(gr)), start = start(gr), end = end(gr),
+             name = paste0("peak_", seq_along(gr)), score = 0, strand = ".",
+             stringsAsFactors = FALSE)
+}
+
+for (k in 1:optimal_k) {
+  idx              <- cluster_peak_indices[[k]]
+  cluster_peaks_gr <- peaks_gr[idx]
+  bed_df           <- peaks_to_bed(cluster_peaks_gr)
+  bed_file         <- file.path(homer_peaks_dir, paste0("cluster_", k, "_chip_peaks.bed"))
+  write.table(bed_df, bed_file, sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+  cat(paste0("Cluster ", k, ": ", nrow(bed_df), " peaks -> ", basename(bed_file), "\n"))
+}
+
+# STEP 3: Background BED files
+cat("\n=== STEP 3: Building background BED files ===\n\n")
+
+all_peaks_bed <- peaks_to_bed(peaks_gr)
+bg_all_file   <- file.path(homer_peaks_dir, "background_all_chip_peaks.bed")
+write.table(all_peaks_bed, bg_all_file, sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+cat(paste0("Background A (all peaks): ", nrow(all_peaks_bed), " peaks\n"))
+
+all_deg_genes_bgc <- rownames(mat_all_deg_scaled)
+all_deg_tss       <- tss_gr[tss_gr$symbol %in% all_deg_genes_bgc]
+hits_all_deg      <- distanceToNearest(all_deg_tss, peaks_gr, ignore.strand = TRUE)
+within_all_deg    <- mcols(hits_all_deg)$distance <= max_distance
+near_deg_idx      <- unique(subjectHits(hits_all_deg[within_all_deg]))
+
+deg_peaks_bed <- peaks_to_bed(peaks_gr[near_deg_idx])
+bg_deg_file   <- file.path(homer_peaks_dir, "background_deg_chip_peaks.bed")
+write.table(deg_peaks_bed, bg_deg_file, sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+cat(paste0("Background B (peaks near any DEG TSS): ", nrow(deg_peaks_bed), " peaks\n"))
+
+# STEP 4: Overlap summary
+cat("\n=== STEP 4: Peak overlap summary across clusters ===\n\n")
+
+overlap_summary <- data.frame(
+  Cluster          = 1:optimal_k,
+  N_Peaks_Selected = sapply(cluster_peak_indices, length),
+  Pct_Of_AllPeaks  = round(sapply(cluster_peak_indices, length) / length(peaks_gr) * 100, 2)
+)
+
+jaccard <- function(a, b) length(intersect(a, b)) / length(union(a, b))
+jaccard_mat <- matrix(NA, nrow = optimal_k, ncol = optimal_k,
+                      dimnames = list(paste0("C", 1:optimal_k), paste0("C", 1:optimal_k)))
+for (i in 1:optimal_k)
+  for (j in 1:optimal_k)
+    jaccard_mat[i, j] <- round(jaccard(cluster_peak_indices[[i]], cluster_peak_indices[[j]]), 3)
+
+cat("Peaks selected per cluster:\n"); print(overlap_summary)
+cat("\nJaccard similarity between cluster peak sets:\n"); print(jaccard_mat)
+
+write.table(overlap_summary,
+  file.path(homer_peaks_dir, "cluster_chip_peak_overlap_summary.tsv"),
+  sep = "\t", row.names = FALSE, quote = FALSE)
+
+# Print HOMER commands
+cat("\n", strrep("=", 80), "\n", sep = "")
+cat("HOMER COMMANDS (run from terminal):\n")
+cat(strrep("=", 80), "\n\n")
+cat(paste0("cd ", homer_peaks_dir, "\n\n"))
+cat("# RECOMMENDED: cluster peaks vs. DEG background\n")
+for (k in 1:optimal_k) {
+  cat(sprintf("findMotifsGenome.pl cluster_%d_chip_peaks.bed hg38 cluster_%d_chip_DEGbg -size given -mask -bg background_deg_chip_peaks.bed -p 4\n", k, k))
+}
+cat("\n# ALTERNATIVE: cluster peaks vs. all ChIP peaks\n")
+for (k in 1:optimal_k) {
+  cat(sprintf("findMotifsGenome.pl cluster_%d_chip_peaks.bed hg38 cluster_%d_chip_allbg -size given -mask -bg background_all_chip_peaks.bed -p 4\n", k, k))
+}
+cat("\n=== ChIP PEAK HOMER INPUT PREPARATION COMPLETE ===\n")
+cat(paste0("BED files saved to: ", homer_peaks_dir, "\n\n"))
+```
+
+```{r HOMER ChIP Peak Motif Visualizations, fig.width=12, fig.height=10}
+
+cat("\n=== HOMER ChIP PEAK MOTIF VISUALIZATIONS ===\n\n")
+
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(tidyr)
+library(pheatmap)
+
+homer_peaks_results_list <- list()
+
+for (k in 1:optimal_k) {
+  file_path <- file.path(homer_peaks_dir, paste0("cluster_", k, "_chip_DEGbg/knownResults.txt"))
+  if (file.exists(file_path)) {
+    df <- read_tsv(file_path, comment = "#", show_col_types = FALSE)
+    df$Cluster <- k
+    homer_peaks_results_list[[k]] <- df
+    cat(paste0("Loaded cluster ", k, ": ", nrow(df), " motifs\n"))
+  } else {
+    cat(paste0("WARNING: File not found for cluster ", k, ": ", file_path, "\n"))
+  }
+}
+
+if (length(homer_peaks_results_list) == 0) {
+  stop("No HOMER ChIP peak results found. Run HOMER first.")
+}
+
+homer_peaks_combined <- bind_rows(homer_peaks_results_list) %>%
+  mutate(Motif_Clean = trimws(gsub("\\(.*", "", `Motif Name`))) %>%
+  rename(Percent_Target = `...6`)
+homer_peaks_combined$Percent_Target <- as.numeric(gsub("%", "", homer_peaks_combined$Percent_Target))
+
+cat(paste0("Total motif-cluster rows: ", nrow(homer_peaks_combined), "\n"))
+
+# 1. Heatmap
+significant_motifs_peaks <- homer_peaks_combined %>%
+  filter(`P-value` < 0.05) %>%
+  group_by(Motif_Clean) %>%
+  summarise(min_pval = min(`P-value`), n_clusters_sig = n(), .groups = "drop") %>%
+  arrange(min_pval) %>% head(40) %>% pull(Motif_Clean)
+
+if (length(significant_motifs_peaks) > 0) {
+  motif_matrix_peaks <- homer_peaks_combined %>%
+    filter(Motif_Clean %in% significant_motifs_peaks) %>%
+    group_by(Motif_Clean, Cluster) %>% slice_min(`P-value`, n = 1, with_ties = FALSE) %>% ungroup() %>%
+    mutate(neg_log_p = pmin(-log10(`P-value`), 50)) %>%
+    select(Motif_Clean, Cluster, neg_log_p) %>%
+    pivot_wider(names_from = Cluster, values_from = neg_log_p, values_fill = 0)
+  
+  motif_mat_df <- as.data.frame(motif_matrix_peaks)
+  rownames(motif_mat_df) <- motif_mat_df$Motif_Clean
+  motif_mat_df$Motif_Clean <- NULL
+  motif_mat_final <- as.matrix(motif_mat_df)
+  motif_mat_final <- motif_mat_final[, order(as.numeric(colnames(motif_mat_final)))]
+  
+  pdf(file.path(homer_chip_dir, "motif_heatmap_chip_peaks.pdf"), width = 12, height = 14)
+  pheatmap(motif_mat_final, cluster_rows = TRUE, cluster_cols = FALSE,
+    color = colorRampPalette(c("white","yellow","orange","red","darkred"))(100),
+    main = "Top Enriched Motifs in ChIP Peaks Across Clusters\n(-log10 P-value, only p < 0.05)",
+    display_numbers = FALSE, fontsize_row = 7, fontsize_col = 11,
+    angle_col = 0, border_color = "grey90", cellwidth = 35, cellheight = 10,
+    breaks = seq(0, max(motif_mat_final), length.out = 101))
+  dev.off()
+  pheatmap(motif_mat_final, cluster_rows = TRUE, cluster_cols = FALSE,
+    color = colorRampPalette(c("white","yellow","orange","red","darkred"))(100),
+    main = "Top Enriched Motifs in ChIP Peaks Across Clusters\n(-log10 P-value, only p < 0.05)",
+    display_numbers = FALSE, fontsize_row = 7, fontsize_col = 11,
+    angle_col = 0, border_color = "grey90", cellwidth = 35, cellheight = 10,
+    breaks = seq(0, max(motif_mat_final), length.out = 101))
+}
+
+# 2. Dot plot
+top_motifs_peaks <- homer_peaks_combined %>%
+  group_by(Cluster) %>% arrange(`P-value`) %>% slice_head(n = 10) %>% ungroup() %>%
+  group_by(Motif_Clean, Cluster) %>% slice_min(`P-value`, n = 1, with_ties = FALSE) %>% ungroup()
+
+p_peaks_dot <- ggplot(top_motifs_peaks, aes(x = factor(Cluster), y = Motif_Clean)) +
+  geom_point(aes(size = -log10(`P-value`), color = -log10(`P-value`),
+                 alpha = ifelse(`P-value` < 0.05, 1, 0.3))) +
+  scale_size_continuous(range = c(1, 10), name = "-log10(P-value)") +
+  scale_color_gradient(low = "lightblue", high = "darkred", name = "-log10(P-value)") +
+  scale_alpha_identity() + theme_bw() +
+  labs(title = "Top 10 Motifs Per Cluster — ChIP Peaks (Dot Plot)", x = "Cluster", y = "Motif")
+print(p_peaks_dot)
+ggsave(file.path(homer_chip_dir, "motif_dotplot_chip_peaks.pdf"), p_peaks_dot, width = 12, height = 10)
+
+# 3. Enrichment summary bar
+cluster_peaks_enrichment_stats <- homer_peaks_combined %>%
+  group_by(Cluster) %>%
+  summarise(n_significant = sum(`P-value` < 0.05), n_very_significant = sum(`P-value` < 0.001),
+            median_pval = median(`P-value`), min_pval = min(`P-value`), .groups = "drop") %>%
+  arrange(desc(n_significant))
+print(cluster_peaks_enrichment_stats)
+
+p_peaks_cluster_summary <- ggplot(cluster_peaks_enrichment_stats,
+  aes(x = factor(Cluster), y = n_significant, fill = factor(Cluster))) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = n_significant), vjust = -0.5, size = 5, fontface = "bold") +
+  scale_fill_brewer(palette = "Set3") + theme_bw() + theme(legend.position = "none") +
+  labs(title = "Significant Motifs per Cluster — ChIP Peaks",
+       subtitle = "Count of motifs with p < 0.05", x = "Cluster", y = "Number of Significant Motifs")
+print(p_peaks_cluster_summary)
+ggsave(file.path(homer_chip_dir, "motif_sig_count_per_cluster_chip_peaks.pdf"),
+       p_peaks_cluster_summary, width = 8, height = 6)
+```
+
+```{r TF-Family Plots Chip-seq}
+tf_peaks_family_enrichment <- list()
+for (family_name in names(tf_families)) {
+  patterns <- tf_families[[family_name]]
+  family_results <- homer_peaks_combined %>%
+    filter(grepl(paste(patterns, collapse = "|"), Motif_Clean, ignore.case = TRUE)) %>%
+    group_by(Cluster, Motif_Clean) %>% slice_min(`P-value`, n = 1, with_ties = FALSE) %>% ungroup() %>%
+    mutate(TF_Family = family_name, neg_log_p = -log10(`P-value`))
+  tf_peaks_family_enrichment[[family_name]] <- family_results
+}
+tf_peaks_family_combined <- bind_rows(tf_peaks_family_enrichment)
+
+if (nrow(tf_peaks_family_combined) > 0) {
+  tf_peaks_summary <- tf_peaks_family_combined %>%
+    group_by(TF_Family, Cluster) %>%
+    summarise(max_enrichment = max(neg_log_p), n_motifs = n(), .groups = "drop") %>%
+    pivot_wider(names_from = Cluster, values_from = max_enrichment, values_fill = 0)
+  
+  tf_peaks_mat <- as.data.frame(tf_peaks_summary)
+  rownames(tf_peaks_mat) <- tf_peaks_mat$TF_Family
+  tf_peaks_mat$TF_Family <- NULL
+  tf_peaks_mat$n_motifs  <- NULL
+  tf_peaks_mat <- as.matrix(tf_peaks_mat)
+  
+  pheatmap(tf_peaks_mat, cluster_rows = FALSE, cluster_cols = FALSE,
+    color = colorRampPalette(c("white","pink","red","darkred"))(100),
+    main = "TF Family Enrichment in ChIP Peaks Across Clusters\n(Max -log10 P-value per family)",
+    filename = file.path(homer_chip_dir, "TF_family_heatmap_chip_peaks.pdf"),
+    display_numbers = TRUE, number_format = "%.1f", fontsize = 11,
+    angle_col = 0, cellwidth = 40, cellheight = 30)
+  
+  pheatmap(tf_peaks_mat, cluster_rows = FALSE, cluster_cols = FALSE,
+    color = colorRampPalette(c("white","pink","red","darkred"))(100),
+    main = "TF Family Enrichment in ChIP Peaks Across Clusters\n(Max -log10 P-value per family)",
+    display_numbers = TRUE, number_format = "%.1f", fontsize = 11,
+    angle_col = 0, cellwidth = 40, cellheight = 30)
+
+  p_peaks_tf_dot <- ggplot(tf_peaks_family_combined %>% filter(`P-value` < 0.05),
+    aes(x = factor(Cluster), y = TF_Family)) +
+    geom_point(aes(size = neg_log_p, color = neg_log_p)) +
+    scale_size_continuous(range = c(2, 12), name = "-log10(P)") +
+    scale_color_gradient(low = "lightblue", high = "darkred", name = "-log10(P)") +
+    theme_bw() +
+    labs(title = "TF Family Enrichment in ChIP Peaks by Cluster",
+         subtitle = "Only showing p < 0.05", x = "Cluster", y = "TF Family")
+  print(p_peaks_tf_dot)
+  ggsave(file.path(homer_chip_dir, "TF_family_dotplot_chip_peaks.pdf"), p_peaks_tf_dot, width = 8, height = 6)
+}
+
+cat("\n=== ChIP PEAK MOTIF VISUALIZATIONS COMPLETE — saved to Clusters/homer_chip_motifs/ ===\n\n")
+```
+
+```{r Loop Anchor Gene Analysis, fig.width=12, fig.height=8}
+cat("\n=== LOOP ANCHOR GENE ANALYSIS ===\n\n")
+
+# loop_dir <- "/ijc/LABS/STIK/RAW/Hi-C/HiC_marta_Oct25/loops/intersected_loops/gene_intersection"
+loop_dir <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/loops/intersected_loops/gene_intersection"
+
+loop_files <- list(
+  EP1_specific = list(
+    file = "EP1_specific_only_05_10kb_exp30kb_anchors_GENES.bed",
+    contrasts = c("EP1_vs_REH", "EP1_vs_Aro"), type = "specific"
+  ),
+  Aro_specific = list(
+    file = "ARO_specific_only_05_10kb_exp30kb_anchors_GENES.bed",
+    contrasts = c("Aro_vs_REH", "EP1_vs_Aro"), type = "specific"
+  ),
+  REH_specific = list(
+    file = "REH_specific_only_05_10kb_exp30kb_anchors_GENES.bed",
+    contrasts = c("EP1_vs_REH", "Aro_vs_REH"), type = "specific"
+  ),
+  shared_EP1_Aro = list(
+    file = "shared_EP1_ARO_only_05_10kb_exp30kb_anchors_GENES.bed",
+    contrasts = "EP1_vs_Aro", type = "shared"
+  ),
+  shared_EP1_REH = list(
+    file = "shared_EP1_REH_only_05_10kb_exp30kb_anchors_GENES.bed",
+    contrasts = "EP1_vs_REH", type = "shared"
+  ),
+  shared_Aro_REH = list(
+    file = "shared_ARO_REH_only_05_10kb_exp30kb_anchors_GENES.bed",
+    contrasts = "Aro_vs_REH", type = "shared"
+  ),
+  shared_all3 = list(
+    file = "shared_loops_all3_05_10kb_exp30kb_anchors_GENES.bed",
+    contrasts = c("EP1_vs_REH", "Aro_vs_REH", "EP1_vs_Aro"), type = "shared"
+  )
+)
+
+loop_data <- list()
+
+for (loop_name in names(loop_files)) {
+  file_path <- file.path(loop_dir, loop_files[[loop_name]]$file)
+  if (file.exists(file_path)) {
+    bed_data <- read.table(file_path, header = FALSE, stringsAsFactors = FALSE)
+    genes    <- unique(bed_data$V5)
+    cat(paste0(loop_name, ": ", length(genes), " unique genes\n"))
+    loop_data[[loop_name]] <- list(
+      genes = genes,
+      contrasts = loop_files[[loop_name]]$contrasts,
+      type = loop_files[[loop_name]]$type
+    )
+  } else {
+    cat(paste0("Warning: File not found - ", file_path, "\n"))
+  }
+}
+cat("\n")
+
+lfc_results <- list()
+
+for (loop_name in names(loop_data)) {
+  genes      <- loop_data[[loop_name]]$genes
+  contrasts  <- loop_data[[loop_name]]$contrasts
+  loop_type  <- loop_data[[loop_name]]$type
+  
+  for (contrast_name in contrasts) {
+    if (contrast_name %in% names(all_results)) {
+      df_contrast <- all_results[[contrast_name]]
+      df_filtered <- df_contrast %>%
+        filter(gene %in% genes) %>%
+        mutate(abs_lfc = abs(log2FoldChange), loop_category = loop_name,
+               loop_type = loop_type, contrast = contrast_name) %>%
+        select(gene, log2FoldChange, abs_lfc, padj, diffexpressed,
+               loop_category, loop_type, contrast)
+      
+      key <- paste0(loop_name, "_", contrast_name)
+      lfc_results[[key]] <- df_filtered
+      cat(paste0(loop_name, " in ", contrast_name, ": ", nrow(df_filtered), " genes matched\n"))
+    }
+  }
+}
+cat("\n")
+
+lfc_combined <- bind_rows(lfc_results) %>%
+  mutate(category_label = paste0(loop_category, "\n(", contrast, ")"),
+         type_contrast  = paste0(loop_type, "_", contrast))
+
+cat(paste0("Total observations: ", nrow(lfc_combined), "\n\n"))
+
+# Summary statistics
+summary_stats <- lfc_combined %>%
+  group_by(loop_category, loop_type, contrast) %>%
+  summarise(n_genes = n(), median_abs_lfc = median(abs_lfc, na.rm = TRUE),
+            mean_abs_lfc = mean(abs_lfc, na.rm = TRUE), sd_abs_lfc = sd(abs_lfc, na.rm = TRUE),
+            n_sig = sum(padj < 0.05 & !is.na(padj)), .groups = "drop")
+
+cat("=== SUMMARY STATISTICS ===\n")
+print(summary_stats)
+write.table(summary_stats, file.path(loops_dir, "loop_anchor_LFC_summary.tsv"),
+            sep = "\t", row.names = FALSE, quote = FALSE)
+
+# Plot 1: Boxplot by category x contrast
+p1 <- ggplot(lfc_combined, aes(x = loop_category, y = log2FoldChange, fill = loop_type)) +
+  geom_boxplot(outlier.size = 0.5, alpha = 0.7) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  facet_wrap(~ contrast, ncol = 3, scales = "free_x") +
+  scale_fill_manual(values = c("specific" = "#E41A1C", "shared" = "#377EB8")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+        strip.text = element_text(face = "bold", size = 11), legend.position = "top") +
+  labs(title = "Log2 Fold Change of Loop Anchor Genes",
+       subtitle = "Comparison across specific and shared loop anchors",
+       x = "Loop Anchor Category", y = "Log2 Fold Change", fill = "Loop Type")
+print(p1)
+ggsave(file.path(loops_dir, "loop_anchor_LFC_boxplot_by_category.pdf"), p1, width = 14, height = 8)
+
+lfc_gene <- lfc_combined %>%
+  group_by(gene, loop_type, contrast) %>%
+  summarise(log2FoldChange = median(log2FoldChange, na.rm = TRUE), .groups = "drop")
+
+library(ggpubr)
+
+# Plot 2: Violin specific vs shared (collapsed)
+p_pub <- ggplot(lfc_gene, aes(loop_type, log2FoldChange, fill = loop_type)) +
+  geom_violin(trim = FALSE, alpha = 0.6) +
+  geom_boxplot(width = 0.15, outlier.shape = NA, color = "black") +
+  geom_jitter(width = 0.1, alpha = 0.25, size = 0.8) +
+  stat_compare_means(method = "wilcox.test", alternative = "greater", label = "p.signif") +
+  scale_fill_manual(values = c("shared" = "#377EB8", "specific" = "#E41A1C")) +
+  theme_bw() +
+  theme(legend.position = "none", axis.title = element_text(size = 13),
+        axis.text = element_text(size = 11)) +
+  labs(x = "Loop type", y = "Median log2 Fold Change per gene")
+print(p_pub)
+ggsave(file.path(loops_dir, "loop_anchor_LFC_violin_specific_vs_shared.pdf"), p_pub, width = 6, height = 6)
+
+# Plot 3: Contrast-stratified
+p_contrast <- ggplot(lfc_gene, aes(loop_type, log2FoldChange, fill = loop_type)) +
+  geom_violin(trim = FALSE, alpha = 0.6) +
+  geom_boxplot(width = 0.15, outlier.shape = NA) +
+  facet_wrap(~ contrast, nrow = 1) +
+  stat_compare_means(method = "wilcox.test", alternative = "greater") +
+  scale_fill_manual(values = c("shared" = "#377EB8", "specific" = "#E41A1C")) +
+  theme_bw()
+print(p_contrast)
+ggsave(file.path(loops_dir, "loop_anchor_LFC_violin_by_contrast.pdf"), p_contrast, width = 12, height = 6)
+
+cat("\n=== LOOP ANCHOR ANALYSIS COMPLETE — plots saved to Loops/ ===\n")
+cat(paste0("Output directory: ", loops_dir, "\n\n"))
+```
+
+```{r Compartment intersection}
+data <- "R:/R_STIK/Hi-C/HiC_marta_Oct25/cscore/Comp_Analysis/files/cs_REH_merge.tab"
+
+cs_REH_merge <- read.table(data,
+                            sep       = "\t",
+                            header    = TRUE,
+                            stringsAsFactors = FALSE)
+
+switching_levels <- c(
+  "A_A_A", "B_B_B",
+  "B_A_A", "B_B_A",
+  "A_B_B", "A_A_B",
+  "A_B_A", "B_A_B"
+)
+
+cs_REH_merge$switching <- factor(cs_REH_merge$switching, levels = switching_levels)
+
+# ============================================================================
+# INTERSECTION: Dynamic compartments × RNA-seq DEGs
+# ============================================================================
+library(GenomicRanges)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+# ----------------------------------------------------------------------------
+# 1. Build GRanges from compartment bins (dynamic only)
+# ----------------------------------------------------------------------------
+dynamic_bins <- cs_REH_merge %>%
+  filter(!switching %in% c("A_A_A", "B_B_B"))
+
+bins_gr <- makeGRangesFromDataFrame(
+  dynamic_bins %>% select(chr, start, end, switching),
+  seqnames.field     = "chr",
+  keep.extra.columns = TRUE
+)
+
+# ----------------------------------------------------------------------------
+# 2. Load gene annotation
+# ----------------------------------------------------------------------------
+genes_bed <- read.table("R:/R_STIK/xavi_scripts/genes_gencode.v28.bed",
+                        sep = "\t", header = FALSE,
+                        col.names = c("chrom", "start", "end", "strand",
+                                      "gene_name", "ID", "description")) %>%
+  select(chrom, start, end, gene_name) %>%
+  mutate(start = as.integer(start), end = as.integer(end))
+
+genes_gr <- makeGRangesFromDataFrame(genes_bed,
+                                     seqnames.field     = "chrom",
+                                     keep.extra.columns = TRUE)
+
+# ----------------------------------------------------------------------------
+# 3. Overlap bins → genes
+# ----------------------------------------------------------------------------
+hits <- findOverlaps(bins_gr, genes_gr)
+
+bin_gene_map <- data.frame(
+  switching = bins_gr$switching[queryHits(hits)],
+  gene_name = genes_gr$gene_name[subjectHits(hits)]
+) %>% distinct()
+
+cat("Unique genes overlapping dynamic bins:", n_distinct(bin_gene_map$gene_name), "\n")
+
+# ----------------------------------------------------------------------------
+# 4. Pull RNA-seq results for all three contrasts
+# ----------------------------------------------------------------------------
+rnaseq_long <- bind_rows(
+  all_results[["EP1_vs_REH"]] %>%
+    select(gene, log2FoldChange, lfc_shrunk, padj, diffexpressed) %>%
+    mutate(contrast = "EP1_vs_REH"),
+  all_results[["Aro_vs_REH"]] %>%
+    select(gene, log2FoldChange, lfc_shrunk, padj, diffexpressed) %>%
+    mutate(contrast = "Aro_vs_REH"),
+  all_results[["EP1_vs_Aro"]] %>%
+    select(gene, log2FoldChange, lfc_shrunk, padj, diffexpressed) %>%
+    mutate(contrast = "EP1_vs_Aro")
+)
+
+# ----------------------------------------------------------------------------
+# 5. Join: bin_gene_map × RNA-seq results
+#    switching stays as 3-letter code throughout
+# ----------------------------------------------------------------------------
+comp_rnaseq <- bin_gene_map %>%
+  inner_join(rnaseq_long, by = c("gene_name" = "gene"))
+
+cat("Genes with both compartment + RNA-seq data:", n_distinct(comp_rnaseq$gene_name), "\n")
+
+# ----------------------------------------------------------------------------
+# 6. Concordance logic using 3-letter codes directly
+#
+#   REH | EP1 | Aro  (order of letters in the code)
+#
+#   A gains (B→A): B_A_A, B_A_B, B_B_A
+#   B gains (A→B): A_B_B, A_B_A, A_A_B
+#
+#   EP1_vs_REH: REH→EP1 switch  → B_A_A, B_A_B (A gain), A_B_B, A_B_A (B gain)
+#   Aro_vs_REH: REH→Aro switch  → B_B_A (A gain), A_A_B (B gain)
+#   EP1_vs_Aro: EP1→Aro switch  → B_A_B (EP1=A, Aro=B → UP), A_B_A (EP1=B, Aro=A → DOWN)
+#                                  B_B_A (Aro=A, EP1=B → DOWN), A_A_B (Aro=B, EP1=A → UP)
+#                                  B_A_A / A_B_B → EP1=Aro → NOT informative
+# ----------------------------------------------------------------------------
+comp_rnaseq <- comp_rnaseq %>%
+  mutate(
+    concordant = case_when(
+
+      # --- EP1_vs_REH ---
+      switching %in% c("B_A_A", "B_A_B") &
+        contrast == "EP1_vs_REH" & diffexpressed == "UP"   ~ "Concordant (A gain + UP)",
+      switching %in% c("B_A_A", "B_A_B") &
+        contrast == "EP1_vs_REH" & diffexpressed == "DOWN" ~ "Discordant (A gain + DOWN)",
+      switching %in% c("A_B_B", "A_B_A") &
+        contrast == "EP1_vs_REH" & diffexpressed == "DOWN" ~ "Concordant (B gain + DOWN)",
+      switching %in% c("A_B_B", "A_B_A") &
+        contrast == "EP1_vs_REH" & diffexpressed == "UP"   ~ "Discordant (B gain + UP)",
+
+      # --- Aro_vs_REH ---
+      switching == "B_B_A" &
+        contrast == "Aro_vs_REH" & diffexpressed == "UP"   ~ "Concordant (A gain + UP)",
+      switching == "B_B_A" &
+        contrast == "Aro_vs_REH" & diffexpressed == "DOWN" ~ "Discordant (A gain + DOWN)",
+      switching == "A_A_B" &
+        contrast == "Aro_vs_REH" & diffexpressed == "DOWN" ~ "Concordant (B gain + DOWN)",
+      switching == "A_A_B" &
+        contrast == "Aro_vs_REH" & diffexpressed == "UP"   ~ "Discordant (B gain + UP)",
+
+      # --- EP1_vs_Aro ---
+      # B_A_B: EP1=A, Aro=B → EP1 more open → expect UP
+      # A_A_B: EP1=A, Aro=B → same → expect UP
+      switching %in% c("B_A_B", "A_A_B") &
+        contrast == "EP1_vs_Aro" & diffexpressed == "UP"   ~ "Concordant (A gain + UP)",
+      switching %in% c("B_A_B", "A_A_B") &
+        contrast == "EP1_vs_Aro" & diffexpressed == "DOWN" ~ "Discordant (A gain + DOWN)",
+      # A_B_A: EP1=B, Aro=A → EP1 more closed → expect DOWN
+      # B_B_A: EP1=B, Aro=A → same → expect DOWN
+      switching %in% c("A_B_A", "B_B_A") &
+        contrast == "EP1_vs_Aro" & diffexpressed == "DOWN" ~ "Concordant (B gain + DOWN)",
+      switching %in% c("A_B_A", "B_B_A") &
+        contrast == "EP1_vs_Aro" & diffexpressed == "UP"   ~ "Discordant (B gain + UP)",
+
+      TRUE ~ "Not DEG"
+    )
+  )
+
+# Summary table
+concordance_summary <- comp_rnaseq %>%
+  dplyr::count(switching, contrast, concordant) %>%
+  dplyr::arrange(switching, concordant)
+
+print(concordance_summary)
+write.table(concordance_summary,
+            file.path(comp_dir, "concordance_summary.tsv"),
+            sep = "\t", row.names = FALSE, quote = FALSE)
+
+# ----------------------------------------------------------------------------
+# 7. Plot 1 — LFC distribution per switching class (3-letter codes), all contrasts
+# ----------------------------------------------------------------------------
+
+# Color palette for the 6 dynamic classes
+switching_colors <- c(
+  "B_A_A" = "#d95f02",
+  "B_A_B" = "#fdae61",
+  "B_B_A" = "#fee08b",
+  "A_B_B" = "#542788",
+  "A_B_A" = "#8073ac",
+  "A_A_B" = "#b2abd2"
+)
+
+lfc_plot <- ggplot(comp_rnaseq,
+       aes(x = switching, y = lfc_shrunk, fill = switching)) +
+  geom_boxplot(outlier.size = 0.4, outlier.alpha = 0.4, alpha = 0.85) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray30") +
+  facet_wrap(~ contrast, nrow = 1) +
+  scale_fill_manual(values = switching_colors, na.value = "grey70") +
+  theme_bw() +
+  theme(axis.text.x  = element_text(angle = 45, hjust = 1, size = 10),
+        strip.text   = element_text(face = "bold"),
+        plot.title   = element_text(hjust = 0.5, face = "bold")) +
+  xlab("Compartment switching class (REH | EP1 | Aro)") +
+  ylab("Shrunken Log2 Fold Change") +
+  labs(title = "RNA-seq LFC in dynamic compartment bins",
+       fill  = "Switching class")
+print(lfc_plot)
+ggsave(file.path(comp_dir, "LFC_distribution_switching_classes.pdf"),
+       plot = lfc_plot, width = 12, height = 6)
+
+# ----------------------------------------------------------------------------
+# 8. Plot 2 — Concordance bar plot (3-letter codes on x-axis)
+# ----------------------------------------------------------------------------
+concordance_colors <- c(
+  "Concordant (A gain + UP)"   = "#f0a500",
+  "Concordant (B gain + DOWN)" = "#6c3483",
+  "Discordant (A gain + DOWN)" = "#f9d08b",
+  "Discordant (B gain + UP)"   = "#c39bd3"
+)
+
+concordance_plot_df <- comp_rnaseq %>%
+  dplyr::filter(concordant != "Not DEG") %>%
+  dplyr::count(switching, contrast, concordant) %>%
+  mutate(contrast = factor(contrast,
+                           levels = c("EP1_vs_REH", "Aro_vs_REH", "EP1_vs_Aro")))
+
+concordance_plot <- ggplot(concordance_plot_df,
+       aes(x = switching, y = n, fill = concordant)) +
+  geom_bar(stat = "identity", position = "dodge",
+           color = "black", linewidth = 0.35) +
+  scale_fill_manual(values = concordance_colors) +
+  facet_wrap(~ contrast, nrow = 1, scales = "free_x") +
+  theme_bw() +
+  theme(plot.title  = element_text(hjust = 0.5, face = "bold"),
+        axis.text.x = element_text(angle = 30, hjust = 1)) +
+  xlab("Switching class (REH | EP1 | Aro)") +
+  ylab("Number of genes") +
+  labs(title = "Compartment–transcription concordance (all contrasts)",
+       fill  = "Category")
+print(concordance_plot)
+ggsave(file.path(comp_dir, "Transcription_concordance_switching_classes.pdf"),
+       plot = concordance_plot, width = 14, height = 6)
+
+# ----------------------------------------------------------------------------
+# 9. Volcano plot — colored by switching class (3-letter codes)
+# ----------------------------------------------------------------------------
+library(ggrepel)
+
+lfc_thresh  <- 1
+padj_thresh <- 0.05
+
+volcano_df <- comp_rnaseq %>%
+  mutate(
+    neglog10_padj = -log10(padj),
+    contrast = factor(contrast, levels = c("EP1_vs_REH", "Aro_vs_REH", "EP1_vs_Aro")),
+    point_class = case_when(
+      padj < padj_thresh & abs(lfc_shrunk) > lfc_thresh ~ as.character(switching),
+      TRUE                                               ~ "Not significant"
+    )
+  )
+
+top_hits <- volcano_df %>%
+  filter(padj < padj_thresh, abs(lfc_shrunk) > lfc_thresh) %>%
+  group_by(contrast) %>%
+  slice_max(order_by = neglog10_padj, n = 10) %>%
+  ungroup()
+
+point_colors <- c(switching_colors, "Not significant" = "grey75")
+point_sizes  <- c(setNames(rep(2, 6), names(switching_colors)), "Not significant" = 1)
+point_alpha  <- c(setNames(rep(0.9, 6), names(switching_colors)), "Not significant" = 0.4)
+
+volcano_comp_plot <- ggplot(volcano_df,
+       aes(x = lfc_shrunk, y = neglog10_padj,
+           color = point_class, size = point_class, alpha = point_class)) +
+  geom_point() +
+  geom_vline(xintercept = c(-lfc_thresh, lfc_thresh),
+             linetype = "dashed", color = "black", linewidth = 0.4) +
+  geom_hline(yintercept = -log10(padj_thresh),
+             linetype = "dashed", color = "black", linewidth = 0.4) +
+  geom_text_repel(
+    data          = top_hits,
+    aes(x = lfc_shrunk, y = neglog10_padj, label = gene_name),
+    size          = 3, color = "gray20", max.overlaps = 20,
+    box.padding   = 0.4, segment.color = "gray50", segment.size = 0.3,
+    min.segment.length = 0.2, inherit.aes = FALSE
+  ) +
+  facet_wrap(~ contrast, nrow = 1) +
+  scale_color_manual(values = point_colors) +
+  scale_size_manual(values  = point_sizes) +
+  scale_alpha_manual(values = point_alpha) +
+  theme_bw() +
+  theme(
+    panel.grid.major = element_line(color = "grey90"),
+    panel.grid.minor = element_blank(),
+    plot.title       = element_text(hjust = 0, face = "bold", size = 13),
+    strip.text       = element_text(face = "bold", size = 11),
+    strip.background = element_rect(fill = "grey95", color = "black"),
+    legend.title     = element_text(face = "bold", size = 10),
+    axis.title       = element_text(size = 11)
+  ) +
+  guides(size = "none", alpha = "none") +
+  labs(
+    title = "Volcano plot — genes in dynamic compartments",
+    x     = "Shrunken log2 Fold Change",
+    y     = "-log10 adjusted p-value",
+    color = "Switching class\n(REH|EP1|Aro)"
+  )
+print(volcano_comp_plot)
+ggsave(file.path(comp_dir, "Volcano_switching_classes.pdf"),
+       plot = volcano_comp_plot, width = 12, height = 6)
+```
+```{r Compartment enrichment}
+# ----------------------------------------------------------------------------
+# Enrichment: switching class × contrast × direction (UP / DOWN)
+# ----------------------------------------------------------------------------
+
+dbs <- c("GO_Biological_Process_2023",
+         "KEGG_2021_Human",
+         "WikiPathway_2023_Human",
+         "Reactome_2022",
+         "MSigDB_Hallmark_2020")
+
+# Filter DEGs passing thresholds — keep direction (diffexpressed)
+deg_filtered <- comp_rnaseq %>%
+  filter(
+    padj < 0.05,
+    abs(log2FoldChange) > 1,
+    diffexpressed %in% c("UP", "DOWN")
+  ) %>%
+  distinct(gene_name, switching, contrast, diffexpressed)
+
+cat("DEGs per switching class, contrast, and direction:\n")
+print(table(deg_filtered$switching, deg_filtered$contrast, deg_filtered$diffexpressed))
+
+# Build gene lists: one per switching × contrast × direction
+comp_gene_lists <- deg_filtered %>%
+  group_by(switching, contrast, diffexpressed) %>%
+  summarise(genes = list(unique(gene_name)), .groups = "drop")
+
+cat("\nGene list sizes:\n")
+print(data.frame(
+  switching    = comp_gene_lists$switching,
+  contrast     = comp_gene_lists$contrast,
+  direction    = comp_gene_lists$diffexpressed,
+  n_genes      = sapply(comp_gene_lists$genes, length)
+))
+
+comp_enrichr_results <- list()
+
+for (i in seq_len(nrow(comp_gene_lists))) {
+
+  sw_class  <- as.character(comp_gene_lists$switching[i])
+  contrast  <- comp_gene_lists$contrast[i]
+  direction <- comp_gene_lists$diffexpressed[i]
+  gene_vec  <- comp_gene_lists$genes[[i]]
+  list_key  <- paste0(sw_class, "_", contrast, "_", direction)
+
+  cat("\n=== Switching:", sw_class,
+      "| Contrast:", contrast,
+      "| Direction:", direction,
+      "| Genes:", length(gene_vec), "===\n")
+
+  if (length(gene_vec) < 5 || !websiteLive) {
+    cat("  Skipping – too few genes or enrichR offline\n")
+    next
+  }
+
+  enriched <- enrichr(gene_vec, dbs)
+  comp_enrichr_results[[list_key]] <- enriched
+
+  for (db_idx in seq_along(dbs)) {
+    db_name <- dbs[db_idx]
+
+    if (is.null(enriched[[db_idx]]) || nrow(enriched[[db_idx]]) == 0) next
+
+    enriched_processed <- process_enrichr_db(enriched[[db_idx]])
+    sig_terms          <- subset(enriched_processed, Adjusted.P.value < 0.05)
+
+    if (nrow(sig_terms) == 0) {
+      cat("  No significant terms:", db_name, "\n")
+      next
+    }
+
+    # Save TSV
+    save_enrichr_genelists(
+      sig_terms,
+      prefix  = paste0(sw_class, "_", contrast, "_", direction, "_", db_name),
+      out_dir = comp_enrichr_dir
+    )
+
+    # Plot
+    p <- plot_enrichr(
+      sig_terms,
+      title_str = paste0(db_name, "\n", sw_class,
+                         " | ", contrast, " | ", direction),
+      xlab_str  = paste0(db_name, " Terms")
+    )
+    print(p)
+
+    ggsave(
+      filename = file.path(comp_enrichr_dir,
+                           paste0("enrichR_", db_name, "_",
+                                  sw_class, "_", contrast, "_", direction, ".pdf")),
+      plot   = p,
+      width  = 10,
+      height = 7
+    )
+
+    cat("  Saved:", db_name, direction, "\n")
+  }
+}
+
+cat("\n=== Compartment enrichR analysis complete ===\n")
+```
